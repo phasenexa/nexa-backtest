@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -57,6 +58,15 @@ class TestFindAlgoClass:
 
         with pytest.raises(click.ClickException, match="No SimpleAlgo"):
             find_algo_class(str(algo_file))
+
+    def test_invalid_spec_raises_click_exception(self, tmp_path: Path) -> None:
+        code = "x = 1"
+        algo_file = _write_algo(tmp_path / "algo.py", code)
+        import click
+
+        with patch("importlib.util.spec_from_file_location", return_value=None):
+            with pytest.raises(click.ClickException, match="Cannot load module"):
+                find_algo_class(str(algo_file))
 
     def test_multiple_subclasses_raises(self, tmp_path: Path) -> None:
         code = """

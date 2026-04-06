@@ -512,6 +512,14 @@ class TestBacktestContextMarketData:
 
 
 class TestBacktestContextOrderManagement:
+    def test_cancel_order_success(self) -> None:
+        ctx = _make_context()
+        order = Order.buy(product_id="P1", volume_mw=Decimal("10"), price_eur_mwh=Decimal("50"))
+        ctx.place_order(order)
+        result = ctx.cancel_order(order.order_id)
+        assert result.status == "cancelled"
+        assert order.order_id not in ctx._pending_orders
+
     def test_cancel_order_not_found(self) -> None:
         ctx = _make_context()
         result = ctx.cancel_order("nonexistent-id")
@@ -598,6 +606,30 @@ class TestBacktestContextMisc:
         ctx = _make_context()
         ctx.log("test message", level="info")
         ctx.log("warning message", level="warning")
+
+    def test_get_signal_history_returns_list(self, tmp_path: Path) -> None:
+        _write_signal_csv(
+            tmp_path,
+            "test_signal",
+            [
+                ("2026-03-01T00:00:00+00:00", 10.0),
+                ("2026-03-01T01:00:00+00:00", 20.0),
+                ("2026-03-01T02:00:00+00:00", 30.0),
+            ],
+        )
+        provider = CsvSignalProvider(
+            name="test_signal",
+            path=tmp_path / "signals" / "test_signal.csv",
+            unit="EUR/MWh",
+            description="",
+        )
+        t = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+        clock = SimulatedClock(initial_time=t)
+        registry = SignalRegistry()
+        registry.register(provider)
+        ctx = _BacktestContext(clock=clock, signal_registry=registry)
+        history = ctx.get_signal_history("test_signal", 2)
+        assert len(history) == 2
 
 
 # ---------------------------------------------------------------------------
