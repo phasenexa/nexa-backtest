@@ -1,0 +1,29 @@
+{
+    "cSpell.words": [
+        "Backtest",
+        "Backtrader",
+        "bidkit",
+        "cython",
+        "docstrings",
+        "EPEX",
+        "intraday",
+        "marketdata",
+        "matplotlib",
+        "Mypy",
+        "nexa",
+        "Nord",
+        "nordpool",
+        "nuitka",
+        "numpy",
+        "ONNX",
+        "plotly",
+        "pyarrow",
+        "pydantic",
+        "pytest",
+        "quants",
+        "Scikit",
+        "sklearn",
+        "VWAP",
+        "Zipline"
+    ]
+}
