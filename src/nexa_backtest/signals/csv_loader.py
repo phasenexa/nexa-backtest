@@ -142,6 +142,11 @@ class CsvSignalProvider:
         offset = self._publication_offset if self._publication_offset is not None else timedelta(0)
         return pd.Timestamp(current_time + offset)
 
+    def _row_to_signal_value(self, row: Any) -> SignalValue:
+        """Construct a :class:`~nexa_backtest.context.SignalValue` from a DataFrame row."""
+        ts: datetime = row[SIGNAL_CSV_TIMESTAMP_COL].to_pydatetime()
+        return SignalValue(name=self._name, timestamp=ts, value=float(row[SIGNAL_CSV_VALUE_COL]))
+
     # ------------------------------------------------------------------
     # SignalProvider protocol
     # ------------------------------------------------------------------
@@ -196,10 +201,7 @@ class CsvSignalProvider:
                 f"publication_offset: {self._publication_offset}."
             )
 
-        row = visible.iloc[-1]
-        ts: datetime = row[SIGNAL_CSV_TIMESTAMP_COL].to_pydatetime()
-        val: float = float(row[SIGNAL_CSV_VALUE_COL])
-        return SignalValue(name=self._name, timestamp=ts, value=val)
+        return self._row_to_signal_value(visible.iloc[-1])
 
     def get_range(self, start: datetime, end: datetime) -> pd.Series[Any]:
         """Return values in the half-open interval ``[start, end)``.
@@ -241,9 +243,4 @@ class CsvSignalProvider:
         mask = self._data[SIGNAL_CSV_TIMESTAMP_COL] <= cutoff
         visible = self._data[mask].tail(lookback)
 
-        result: list[SignalValue] = []
-        for _, row in visible.iterrows():
-            ts: datetime = row[SIGNAL_CSV_TIMESTAMP_COL].to_pydatetime()
-            val: float = float(row[SIGNAL_CSV_VALUE_COL])
-            result.append(SignalValue(name=self._name, timestamp=ts, value=val))
-        return result
+        return [self._row_to_signal_value(row) for _, row in visible.iterrows()]

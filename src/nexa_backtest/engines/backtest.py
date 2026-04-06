@@ -53,6 +53,15 @@ _AUCTION_OFFSET = timedelta(days=-1, hours=12)  # D-1 12:00 UTC
 _GATE_CLOSURE_OFFSET = timedelta(hours=1)  # gate closes 1h after auction opens
 
 
+def _zero_position(product_id: str) -> Position:
+    return Position(
+        product_id=product_id,
+        net_mw=Decimal("0"),
+        avg_entry_price=Decimal("0"),
+        unrealised_pnl=Decimal("0"),
+    )
+
+
 class _BacktestContext:
     """Internal :class:`~nexa_backtest.context.TradingContext` implementation.
 
@@ -184,12 +193,7 @@ class _BacktestContext:
         """Return the current net position for ``product_id``."""
         fills = self._position_fills.get(product_id, [])
         if not fills:
-            return Position(
-                product_id=product_id,
-                net_mw=Decimal("0"),
-                avg_entry_price=Decimal("0"),
-                unrealised_pnl=Decimal("0"),
-            )
+            return _zero_position(product_id)
 
         net_mw = Decimal("0")
         total_cost = Decimal("0")
@@ -202,16 +206,11 @@ class _BacktestContext:
                 total_cost -= f.price * f.volume
 
         if net_mw == 0:
-            return Position(
-                product_id=product_id,
-                net_mw=Decimal("0"),
-                avg_entry_price=Decimal("0"),
-                unrealised_pnl=Decimal("0"),
-            )
+            return _zero_position(product_id)
 
         avg_price = abs(total_cost / net_mw)
         mark = self._clearing_prices.get(product_id, avg_price)
-        unrealised = (mark - avg_price) * net_mw if net_mw > 0 else (avg_price - mark) * abs(net_mw)
+        unrealised = (mark - avg_price) * net_mw
 
         return Position(
             product_id=product_id,
@@ -466,10 +465,9 @@ class BacktestEngine:
                 result = matcher.match(order)
 
                 if result.fill is not None:
-                    fill = result.fill
-                    context._record_fill(fill)
-                    all_fills.append(fill)
-                    self._algo.on_fill(context, fill)
+                    context._record_fill(result.fill)
+                    all_fills.append(result.fill)
+                    self._algo.on_fill(context, result.fill)
 
         self._algo.on_teardown(context)
 
