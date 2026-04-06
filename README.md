@@ -1,38 +1,27 @@
 # nexa-backtest
 
+**Energy market backtesting framework for European power trading.**
+
 [![CI](https://github.com/phasenexa/nexa-backtest/actions/workflows/ci.yml/badge.svg)](https://github.com/phasenexa/nexa-backtest/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/nexa-backtest)](https://pypi.org/project/nexa-backtest/)
 [![Python](https://img.shields.io/pypi/pyversions/nexa-backtest)](https://pypi.org/project/nexa-backtest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A backtesting framework built for European power markets. Not another equities backtester
-with energy bolted on.
+---
 
-Handles day-ahead auctions, intraday auctions, intraday continuous trading, 15-minute MTUs,
-block bids, gate closures, and exchange-specific matching rules. Runs your algo against
-historical data and tells you: **did it make money? Did it beat VWAP?**
+Most backtesting frameworks are built for equities. They assume continuous order books, tick-by-tick data, and price-time priority. European power markets work differently: day-ahead auctions with gate closures, intraday continuous trading, block bids, linked orders, and 15-minute MTUs.
 
-## Why this exists
+nexa-backtest is purpose-built for this. It replays historical market conditions, runs your trading algorithm against them, and answers two questions: **did it make money?** and **did it beat VWAP?**
 
-Every backtesting framework out there assumes continuous order books, tick-by-tick data,
-and price-time priority. Energy markets work differently. You have auctions with gate
-closures, 96 quarter-hour products per day, block bids that span multiple hours, and
-matching algorithms that clear everything at once.
+## Key Features
 
-If you have tried backtesting an energy trading strategy with Zipline, Backtrader, or
-VectorBT, you know the pain. `nexa-backtest` is the tool those frameworks should have been.
-
-## Features
-
-- **Purpose-built for energy**: DA auctions, ID auctions, IDC continuous, 15-min MTUs
-- **One interface, three engines**: same algo code for backtesting, paper trading, and live trading
-- **Two API levels**: `SimpleAlgo` for quick experiments, `@algo` decorator for full control
-- **Exchange adapters**: Nord Pool, EPEX SPOT, EEX with feature detection and validation
-- **Signal system**: weather, price forecasts, load data, carbon prices, or anything custom
-- **ML model support**: ONNX, scikit-learn, PyTorch models via `ctx.predict()`
-- **Smart data loading**: DA data loaded entirely (tiny), IDC data windowed from Parquet (scalable)
-- **Validation pipeline**: ruff + mypy + exchange feature checks + look-ahead bias detection
-- **Code protection**: Cython/Nuitka compilation for IP-sensitive hosted environments
+- **One interface, three modes.** Your algo runs identically in backtest, paper trading, and live trading. Same code, different engine underneath. Zero changes to go from replay to production.
+- **Two API levels.** `SimpleAlgo` with hooks for quick experiments. `@algo` with async event streams for full control.
+- **DA + IDC support.** Day-ahead auction matching (price-taker against historical clearing prices) and intraday continuous matching (price-time priority against historical order book).
+- **Signal system.** Plug in weather forecasts, DA prices, load forecasts, gas prices, or any time-series data. Built-in look-ahead bias prevention via `publication_offset`.
+- **ML model integration.** Register ONNX or scikit-learn models and call `ctx.predict()` from your algo.
+- **Exchange adapters.** Nord Pool, EPEX SPOT, EEX. Each adapter declares its capabilities. Use block bids on an exchange that doesn't support them? The validator catches it before you run.
+- **Efficient replay.** DA data loads entirely (it's tiny). IDC data uses windowed replay via PyArrow row groups, keeping peak memory at 200-500 MB regardless of replay period.
 
 ## Installation
 
@@ -43,67 +32,117 @@ pip install nexa-backtest
 With optional extras:
 
 ```bash
-pip install nexa-backtest[pandas]     # DataFrame output
-pip install nexa-backtest[plot]       # matplotlib/plotly charts
-pip install nexa-backtest[ml]         # ONNX + scikit-learn model support
-pip install nexa-backtest[data]       # nexa-marketdata integration
-pip install nexa-backtest[live]       # nexa-connect for live trading
-pip install nexa-backtest[all]        # everything
+pip install nexa-backtest[pandas]       # DataFrame output
+pip install nexa-backtest[ml]           # ONNX model inference
+pip install nexa-backtest[charts]       # Report charts (matplotlib/plotly)
+pip install nexa-backtest[marketdata]   # Data fetching via nexa-marketdata
+pip install nexa-backtest[live]         # Live trading via nexa-connect
+pip install nexa-backtest[all]          # Everything
 ```
 
-## Quick start
+## Quick Start
 
-### Your first backtest (20 lines)
+### Write an algo
+
+```python
+from nexa_backtest import SimpleAlgo, TradingContext, Order
+
+class BuyBelowForecast(SimpleAlgo):
+    """Buy when DA clearing price is below our forecast."""
+
+    def on_setup(self, ctx: TradingContext) -> None:
+        self.subscribe_signal("price_forecast")
+        self.threshold = 5.0  # EUR/MWh
+
+    def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:
+        forecast = ctx.get_signal("price_forecast").value
+        ctx.place_order(Order.buy(
+            product=auction.product_id,
+            volume_mw=10,
+            price_eur=forecast - self.threshold,
+        ))
+
+    def on_fill(self, ctx: TradingContext, fill: Fill) -> None:
+        ctx.log(f"Filled {fill.volume_mw} MW @ {fill.price_eur}")
+```
+
+### Backtest it
 
 ```python
 from datetime import date
-from nexa_backtest import SimpleAlgo, TradingContext, Order, BacktestEngine
+from nexa_backtest import BacktestEngine
+from nexa_backtest.signals import CsvSignalProvider
 
-class BuyBelowForecast(SimpleAlgo):
-    """Buy when DA clearing price is below the wind forecast signal."""
-
-    def on_setup(self, ctx: TradingContext) -> None:
-        self.subscribe_signal("da_price_forecast")
-        self.subscribe_signal("wind_generation_forecast")
-
-    def on_auction_open(self, ctx: TradingContext, auction) -> None:
-        forecast = ctx.get_signal("da_price_forecast").value
-        wind = ctx.get_signal("wind_generation_forecast").value
-
-        if wind > 15_000:  # High wind expected, prices likely low
-            ctx.place_order(Order.buy(
-                product=auction.product_id,
-                volume_mw=10,
-                price_eur=forecast - 5.0,
-            ))
-
-    def on_fill(self, ctx: TradingContext, fill) -> None:
-        ctx.log(f"Filled {fill.volume_mw} MW @ {fill.price_eur}")
-
-# Run it
 result = BacktestEngine(
     algo=BuyBelowForecast(),
     exchange="nordpool",
     start=date(2026, 3, 1),
     end=date(2026, 3, 31),
     products=["NO1_DA"],
+    signals=[
+        CsvSignalProvider(
+            name="price_forecast",
+            path="data/signals/price_forecast.csv",
+            unit="EUR/MWh",
+            publication_offset=timedelta(hours=12),
+        ),
+    ],
     initial_capital=100_000,
 ).run()
 
 print(result.summary())
 # Total PnL: +12,340.50 EUR
-# vs VWAP:   +3.2%
-# Sharpe:    1.4
-# Win rate:  62%
-# Max DD:    -4,200.00 EUR
+# vs VWAP: +3.2%
+# Win rate: 62%
+# Trades: 186
 ```
 
-### Full control with @algo
+Or run from the CLI:
 
-For quants who want to manage their own event loop:
+```bash
+# Signal CSVs are discovered by convention in {data_dir}/signals/
+nexa run my_algo.py \
+    --exchange nordpool \
+    --start 2026-03-01 \
+    --end 2026-03-31 \
+    --products NO1_DA \
+    --data-dir ./data \
+    --capital 100000
+```
+
+### Paper trade it (same algo, zero changes)
 
 ```python
-from nexa_backtest import TradingContext, Order, algo
+from nexa_backtest import PaperEngine
+
+paper = PaperEngine(
+    algo=BuyBelowForecast(),
+    exchange="nordpool",
+    products=["NO1_DA"],
+    signals=[...],
+).start()
+```
+
+### Go live (same algo, zero changes)
+
+```python
+from nexa_backtest import LiveEngine
+
+live = LiveEngine(
+    algo=BuyBelowForecast(),
+    exchange="nordpool",
+    credentials=NordPoolCredentials.from_env(),
+    products=["NO1_DA"],
+    signals=[...],
+).start()
+```
+
+## The Low-Level API
+
+For quants who want full control over the event loop:
+
+```python
+from nexa_backtest import TradingContext, algo
 
 @algo(name="spread_scalper", version="1.0.0")
 async def run(ctx: TradingContext) -> None:
@@ -120,7 +159,7 @@ async def run(ctx: TradingContext) -> None:
                     ))
 
             case GateClosureWarning(product_id=pid, remaining=remaining):
-                if remaining.total_seconds() < 300:
+                if remaining < timedelta(minutes=5):
                     pos = ctx.get_position(pid)
                     if pos.net_mw != 0:
                         ctx.place_order(Order.market(
@@ -129,60 +168,49 @@ async def run(ctx: TradingContext) -> None:
                         ))
 ```
 
-### Same algo, three modes
+## Signals
+
+Any time-series data your algo needs. Load a CSV or implement the `SignalProvider` protocol:
 
 ```python
-from nexa_backtest import BacktestEngine, PaperEngine, LiveEngine
+from nexa_backtest.signals import CsvSignalProvider
 
-algo = BuyBelowForecast()
-
-# Backtest: historical replay, simulated matching
-result = BacktestEngine(algo=algo, exchange="nordpool", ...).run()
-
-# Paper: live data, simulated matching, no real money
-paper = PaperEngine(algo=algo, exchange="nordpool", ...).start()
-
-# Live: real data, real exchange, real money
-live = LiveEngine(algo=algo, exchange="nordpool", credentials=...).start()
-```
-
-The algo code is identical in all three cases. The only thing that changes is
-which engine you pass it to.
-
-### Using signals
-
-```python
-from nexa_backtest.signals import (
-    DayAheadPriceSignal,
-    WindForecastSignal,
-    LoadForecastSignal,
+# Load your own forecast data from CSV
+forecast = CsvSignalProvider(
+    name="my_forecast",
+    path="data/signals/my_forecast.csv",
+    unit="EUR/MWh",
+    description="Our internal price forecast",
+    publication_offset=timedelta(hours=12),  # Published 12h before delivery
 )
 
-result = BacktestEngine(
+engine = BacktestEngine(
     algo=algo,
-    exchange="nordpool",
-    start=date(2026, 3, 1),
-    end=date(2026, 3, 31),
-    signals=[
-        DayAheadPriceSignal(zone="NO1"),
-        WindForecastSignal(zone="NO1", provider="meteomatics"),
-        LoadForecastSignal(zone="NO1"),
-    ],
-).run()
+    signals=[forecast],
+    # ...
+)
 ```
 
-Custom signals implement `SignalProvider`:
+CSV format (simple two-column minimum):
+
+```csv
+timestamp,value
+2026-03-15T00:00:00+01:00,42.31
+2026-03-15T00:15:00+01:00,41.87
+2026-03-15T00:30:00+01:00,43.05
+```
+
+For full control, implement `SignalProvider` directly:
 
 ```python
 from nexa_backtest.signals import SignalProvider, SignalSchema, SignalValue
 
-class MyForecast(SignalProvider):
-    name = "my_forecast"
+class MyModelForecast(SignalProvider):
+    name = "model_forecast"
     schema = SignalSchema(
-        name="my_forecast",
+        name="model_forecast",
         dtype=float,
         frequency=timedelta(minutes=15),
-        description="Internal price forecast",
         unit="EUR/MWh",
     )
 
@@ -196,7 +224,11 @@ class MyForecast(SignalProvider):
         )
 ```
 
-### Using ML models
+Look-ahead bias is prevented automatically. The `publication_offset` controls when forecast values become visible to your algo. A value for delivery period T with `publication_offset=timedelta(hours=6)` was published at T - 6 hours, so it only becomes visible when the simulated clock reaches that publication time.
+
+## ML Models
+
+Register models and call `ctx.predict()` from your algo:
 
 ```python
 from nexa_backtest.models import ModelRegistry, ONNXModel
@@ -204,17 +236,12 @@ from nexa_backtest.models import ModelRegistry, ONNXModel
 models = ModelRegistry()
 models.register(ONNXModel(
     name="price_predictor",
-    path="models/price_xgboost.onnx",
+    path="models/xgboost_prices.onnx",
     input_schema={"wind": float, "load": float, "hour": int},
     output_schema={"price_forecast": float},
 ))
 
-result = BacktestEngine(
-    algo=algo,
-    exchange="nordpool",
-    models=models,
-    ...
-).run()
+engine = BacktestEngine(algo=algo, models=models, ...)
 
 # In your algo:
 prediction = ctx.predict("price_predictor", {
@@ -224,165 +251,129 @@ prediction = ctx.predict("price_predictor", {
 })
 ```
 
-### Validation
+ONNX is recommended (portable, fast, no arbitrary code execution). Scikit-learn pickle is supported but flagged as a security risk in hosted environments.
+
+## Validation
 
 Catch bugs before they cost you a 10-minute backtest run:
 
 ```bash
 $ nexa validate my_algo.py --exchange nordpool
 
-Step 1/6: Syntax Check (ruff)
-  [PASS] No syntax errors
+Step 1/6: Syntax Check (ruff)          [PASS]
+Step 2/6: Type Check (mypy --strict)   [PASS]
+Step 3/6: Interface Compliance         [PASS]
+Step 4/6: Exchange Feature Compat      [FAIL]
+  - Line 42: Order.block_bid() used, but Nord Pool IDC
+    does not support block bids.
+Step 5/6: Look-ahead Bias Detection    [PASS]
+Step 6/6: Resource Safety              [PASS]
 
-Step 2/6: Type Check (mypy --strict)
-  [PASS] TradingContext protocol satisfied
-
-Step 3/6: Interface Compliance
-  [PASS] Required hooks implemented
-
-Step 4/6: Exchange Feature Compatibility
-  [PASS] All order types supported by Nord Pool
-
-Step 5/6: Look-ahead Bias Detection
-  [PASS] No future data access detected
-
-Step 6/6: Resource Safety
-  [WARN] Line 78: time.sleep() detected. Use ctx.wait() instead.
-
-Result: PASSED (1 warning)
+1 error. Fix before running.
 ```
 
-### PnL analysis
+## Historical Data
+
+Backtest data is stored as Parquet files. Use `nexa-marketdata` to fetch and cache data, or bring your own:
 
 ```python
-result = engine.run()
+from nexa_backtest.data import ParquetLoader, NexaMarketdataLoader
 
-# Summary
-print(result.summary())
+# From local files
+loader = ParquetLoader(data_dir="./data/nordpool")
 
-# VWAP comparison
-print(result.vwap_analysis())
-# Period      | Your Avg | VWAP   | Edge    | Volume
-# 2026-03-01  | 42.30    | 43.15  | +0.85   | 120 MW
-# 2026-03-02  | 38.90    | 39.20  | +0.30   | 95 MW
-# TOTAL       | 44.20    | 44.85  | +0.65   | 3,240 MW
-
-# Export
-result.to_parquet("results/march.parquet")
-result.to_html("results/march.html")  # full report with charts
-trades_df = result.trades.to_dataframe()
-```
-
-## Historical data format
-
-Data is stored as Parquet files. DA data is tiny (load entirely). IDC data is
-large (windowed replay).
-
-```
-data/
-  nordpool/
-    da_clearing_prices/
-      NO1_2025.parquet              # ~1.7 MB, loaded entirely
-      NO1_2026.parquet
-    idc_orderbook_snapshots/
-      NO1_2026_01.parquet           # ~800 MB, windowed replay
-      NO1_2026_02.parquet
-    idc_events/
-      NO1_2026_01.parquet           # ~125 MB, windowed replay
-    idc_trades/
-      NO1_2026_01.parquet           # ~17 MB, windowed replay
-  signals/
-    wind_forecast/
-      NO1_2026.parquet              # ~50 MB, loaded entirely
-```
-
-Use `nexa-marketdata` to fetch and cache historical data, then `nexa-backtest`
-replays it:
-
-```python
-from nexa_backtest.data import NexaMarketdataLoader
-
+# Or fetch via nexa-marketdata
 loader = NexaMarketdataLoader(
     source="nordpool",
     zones=["NO1", "NO2"],
     start=date(2025, 10, 1),
     end=date(2026, 3, 31),
 )
-# Downloads and caches locally as Parquet
 ```
 
-## Exchange support
+**Data format examples (shown as CSV for clarity, stored as Parquet):**
 
-| Exchange | DA Auction | ID Auction | IDC Continuous | Status |
-|----------|:----------:|:----------:|:--------------:|--------|
-| Nord Pool | Yes | Yes | Yes | Planned |
-| EPEX SPOT | Yes | Yes | Yes | Planned |
-| EEX | Yes | - | - | Planned |
-
-Each exchange adapter declares its capabilities. The validation pipeline checks
-your algo uses only supported features before runtime:
-
-```
-$ nexa validate my_algo.py --exchange epex_spot
-
-  [FAIL] Feature compatibility:
-    - Line 42: Order.block_bid() used, but EPEX SPOT continuous
-      does not support block bids.
-
-  1 error. Fix before running.
+DA clearing prices:
+```csv
+timestamp,zone,price_eur_mwh,volume_mwh
+2026-03-15T00:00:00+01:00,NO1,42.31,1250.5
+2026-03-15T00:15:00+01:00,NO1,41.87,1180.2
+2026-03-15T00:30:00+01:00,NO1,43.05,1310.8
 ```
 
-## Code protection
+IDC events:
+```csv
+timestamp,event_type,order_id,zone,product_id,side,price_eur_mwh,volume_mw,remaining_mw
+2026-03-15T08:12:03.412+01:00,new,ord-88291,NO1,NO1-QH-0900,buy,52.40,5.0,5.0
+2026-03-15T08:12:03.987+01:00,new,ord-88292,NO1,NO1-QH-0900,sell,53.10,3.0,3.0
+2026-03-15T08:12:04.201+01:00,trade,ord-88293,NO1,NO1-QH-0900,buy,53.10,2.0,0.0
+```
 
-For hosted environments where you do not want to share source code:
+## Code Protection
+
+If you don't want to share your algo's source code with a hosted platform:
 
 ```bash
-# Compile to native binary (Cython)
+# Compile to native shared library (Cython)
 $ nexa compile my_algo.py --output my_algo.so
 
-# Upload compiled binary, not source
-$ nexa upload my_algo.so --config backtest.yaml
+# Or maximum protection (Nuitka)
+$ nexa compile my_algo.py --compiler nuitka --output my_algo_binary
 ```
 
-| Approach | IP Protection | Performance | Best for |
-|----------|:------------:|:-----------:|----------|
-| Self-hosted | N/A (local) | Fastest | Most users |
-| Cython | Good | Fast | Hosted backtesting |
-| Nuitka | Very good | Fast | Maximum protection |
-| Container | Excellent | Slower | Enterprise |
+Upload the compiled binary. We run it but can't read it.
 
-## Phase Nexa ecosystem
+## CLI Reference
 
-`nexa-backtest` integrates with the rest of the Phase Nexa toolkit:
-
-```
-nexa-marketdata ---- fetches data ------> nexa-backtest (replay)
-nexa-bidkit -------- bid construction --> nexa-backtest (order types)
-nexa-connect ------- exchange comms ----> nexa-backtest (live engine)
-nexa-forecast ------ ML models ---------> nexa-backtest (signals/models)
-nexa-mcp ----------- LLM interface -----> nexa-backtest (run from chat)
+```bash
+nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31
+nexa validate my_algo.py --exchange nordpool
+nexa compile my_algo.py --output my_algo.so
+nexa report results.parquet --format html --output report.html
 ```
 
-Each piece is independently useful. Together they form a complete trading
-development environment.
+## Phase Nexa Ecosystem
 
-## Performance
+nexa-backtest integrates with the wider Phase Nexa toolkit:
 
-| Scenario | Time | Peak memory |
-|----------|------|-------------|
-| 1 year, DA, 1 zone | < 1 second | ~50 MB |
-| 1 year, DA, 10 zones | < 5 seconds | ~200 MB |
-| 1 year, IDC, 1 zone | 1-3 minutes | ~300 MB |
-| 1 year, IDC, 5 zones | 3-8 minutes | ~500 MB |
-| 4 algos shared, IDC, 5 zones | 5-10 minutes | ~700 MB |
+| Package | Role | Integration |
+|---------|------|-------------|
+| [nexa-marketdata](https://github.com/phasenexa/nexa-marketdata) | Market data fetching | Historical data source for backtests |
+| [nexa-bidkit](https://github.com/phasenexa/nexa-bidkit) | Bid generation | Order type definitions and validation |
+| [nexa-connect](https://github.com/phasenexa/nexa-connect) | Exchange connectivity | Powers the live trading engine |
+| [nexa-forecast](https://github.com/phasenexa/nexa-forecast) | Price forecasting | ML models and signal providers |
+| [nexa-mcp](https://github.com/phasenexa/nexa-mcp) | LLM interface | Run backtests from chat |
 
-Times assume Parquet on local SSD/NVMe.
+## Implementation Status
+
+| Feature | Status |
+|---------|--------|
+| Core types and protocols | Task 01 |
+| SimpleAlgo with DA hooks | Task 01 |
+| BacktestEngine (DA only) | Task 01 |
+| Nord Pool DA adapter | Task 01 |
+| Parquet data loader (DA) | Task 01 |
+| PnL + VWAP analysis | Task 01 |
+| Signal system + CSV loader | Task 02 |
+| CLI (`nexa run`) | Task 02 |
+| IDC continuous matching | Planned (Stage 2) |
+| Windowed replay | Planned (Stage 2) |
+| `@algo` low-level API | Planned (Stage 2) |
+| Built-in signal providers | Planned (Stage 2) |
+| EPEX SPOT / EEX adapters | Planned (Stage 2) |
+| HTML reports | Planned (Stage 2) |
+| Sharpe / drawdown / equity curve | Planned (Stage 2) |
+| Validation pipeline | Planned (Stage 3) |
+| ML model registry | Planned (Stage 3) |
+| Multi-algo replay | Planned (Stage 3) |
+| Paper trading engine | Planned (Stage 4) |
+| Live trading engine | Planned (Stage 4) |
+| Code compilation | Planned (Stage 4) |
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards,
-and the PR process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and PR workflow.
 
 ## License
 
-MIT
+[MIT](./LICENSE)

@@ -10,6 +10,9 @@ with 15-minute MTU resolution natively.
 
 Part of the Phase Nexa ecosystem.
 
+See `docs/DESIGN.md` for the full architectural rationale, data volume
+estimates, hosting cost analysis, and matching engine design.
+
 ## Audience
 
 Quants, data scientists, and developers at energy trading companies who build
@@ -58,6 +61,10 @@ the design is broken.
 - Gate closure = deadline for submitting/modifying orders for a delivery period.
   Different per exchange and product type. The algo receives a
   `GateClosureWarning` event before this happens.
+- NOP = Net Open Position. The net MW across all orders for a given delivery
+  period. Tracked per product via `Position.net_mw`. Portfolio-level NOP
+  aggregation across products for the same delivery period is a stage 2
+  concern.
 
 ## Data loading strategy
 
@@ -93,10 +100,26 @@ time, not at runtime. The `nexa validate` CLI catches these before execution.
 
 Signals are any time-series data the algo consumes: weather forecasts, DA
 prices, load forecasts, gas prices, etc. Each signal has a `publication_offset`
-that prevents look-ahead bias. At simulated time T, the signal returns the
-value that was known at T, not the future value.
+that prevents look-ahead bias.
 
-Custom signals implement the `SignalProvider` protocol.
+`publication_offset` is a positive `timedelta` representing how far ahead of
+the delivery period the forecast was published. A value describing delivery
+period T was published at `T - publication_offset`, so it becomes visible
+when the simulated clock reaches that publication time.
+
+Example: a wind forecast with `publication_offset=timedelta(hours=6)` means
+the forecast for the 08:00 delivery period was published at 02:00. At
+simulated time 01:59, this value is not yet visible. At 02:00, it is.
+
+In code: `get_value(current_time)` returns the latest value where
+`timestamp <= current_time + publication_offset`.
+
+If no `publication_offset` is set, values are available at their timestamp.
+This is correct for actuals/historical data but would be look-ahead bias
+for forecasts.
+
+Custom signals implement the `SignalProvider` protocol. The simplest path
+is `CsvSignalProvider` which loads a CSV file with `timestamp,value` columns.
 
 ## ML model support
 
@@ -121,7 +144,7 @@ codes for CI integration.
 
 ## Code layout
 
-```
+```text
 src/nexa_backtest/
     __init__.py
     _version.py
@@ -146,8 +169,9 @@ src/nexa_backtest/
         eex.py           # EEX adapter
 
     signals/
-        base.py          # SignalProvider protocol, SignalSchema
+        base.py          # SignalProvider protocol, SignalSchema, SignalValue
         registry.py      # Signal registration and lookup
+        csv_loader.py    # CsvSignalProvider (load CSV as a signal)
         builtins.py      # DA price, wind, solar, load, imbalance, gas, carbon
 
     models/
@@ -182,7 +206,7 @@ src/nexa_backtest/
         nuitka_compiler.py   # Nuitka compilation for IP protection
 
     cli/
-        main.py          # CLI entry point (click or typer)
+        main.py          # CLI entry point (click)
         validate.py      # nexa validate
         run.py           # nexa run
         compile.py       # nexa compile
@@ -191,41 +215,62 @@ src/nexa_backtest/
 
 ## Implementation sequence
 
-### Stage 1: DA Auction Backtester (minimum viable)
+### Task 01: Core Types and DA Engine
 
-The smallest thing that produces useful results. Scope:
+The absolute minimum that produces a useful result. A customer writes a
+SimpleAlgo, runs BacktestEngine.run() in a Python script, gets PnL with
+VWAP comparison printed to stdout.
 
-- `types.py` with core domain types (Order, Fill, Position, MTU, PriceLevel)
-- `exceptions.py` with error hierarchy
-- `context.py` with TradingContext protocol
-- `algo.py` with SimpleAlgo base class (on_setup, on_auction_open,
-  on_fill, on_gate_closure hooks only)
+Scope:
+
+- `types.py`, `exceptions.py`, `context.py` (protocol with stubs for
+  unimplemented methods)
+- `algo.py` with SimpleAlgo (on_setup, on_auction_open, on_fill,
+  on_teardown hooks only; other hooks exist as no-ops)
 - `engines/clock.py` with SimulatedClock
 - `engines/backtest.py` with BacktestEngine (DA only, full data load)
 - `engines/matching.py` with DA auction matching (price-taker)
-- `exchanges/base.py` with ExchangeAdapter protocol
-- `exchanges/capabilities.py` with ExchangeCapabilities
-- `exchanges/nordpool.py` with Nord Pool DA adapter
+- `exchanges/base.py`, `exchanges/capabilities.py`, `exchanges/nordpool.py`
 - `data/loader.py` with ParquetLoader (DA clearing prices only)
 - `data/schema.py` with DA clearing price schema
-- `analysis/pnl.py` with basic PnL calculation
-- `analysis/vwap.py` with VWAP benchmark comparison
-- `analysis/metrics.py` with Sharpe, drawdown, win rate
-- `cli/main.py` with `nexa run` command (text output)
-- One signal: CSV-based custom signal loader (so users can bring
-  their own forecast data without implementing SignalProvider)
+- `analysis/pnl.py`, `analysis/vwap.py`, `analysis/metrics.py`
+  (total PnL, vs VWAP, win rate, volume, trade count only)
+- Synthetic test fixture generation
+- Example algo (runnable Python script, no CLI)
 
-Does NOT include: IDC, windowed replay, validation pipeline, ML models,
-code compilation, HTML reports, paper/live engines, multi-algo replay.
+Does NOT include: CLI, signals, Sharpe ratio, drawdown, equity curve,
+IDC, windowed replay, validation pipeline, ML models, code compilation,
+HTML reports, paper/live engines, multi-algo replay.
+
+### Task 02: Signals, CSV Signal Loader, and CLI
+
+Adds the signal system and CLI on top of task 01.
+
+Scope:
+
+- `signals/base.py` with SignalProvider protocol, SignalSchema, SignalValue
+- `signals/registry.py` with SignalRegistry
+- `signals/csv_loader.py` with CsvSignalProvider (CSV file as a signal,
+  with publication_offset for look-ahead bias prevention)
+- Wire signals into BacktestEngine and TradingContext
+- `subscribe_signal()` and `on_signal` hook on SimpleAlgo
+- `cli/main.py` with `nexa run` command
+- Signal CSV discovery by convention: `{data_dir}/signals/{name}.csv`
+- Updated example algo using a price forecast signal
+
+Does NOT include: built-in signal providers, YAML/JSON signal config,
+`nexa validate`, `nexa compile`, `nexa report`, IDC, HTML reports.
 
 ### Stage 2: IDC Continuous + Windowed Replay
 
 - IDC continuous matching engine (price-time priority)
 - Windowed data loading (PyArrow row groups, SlidingWindow, manifest)
 - `@algo` decorator with async event stream
-- Full signal system with publication_offset
+- Built-in signal providers (DA price, wind, solar, load, etc.)
 - EPEX SPOT and EEX exchange adapters
 - HTML report generation
+- Sharpe ratio, max drawdown, equity curve
+- Portfolio-level NOP aggregation across products
 
 ### Stage 3: Intelligence + Quality
 
@@ -259,7 +304,11 @@ product_id (str), price_eur_mwh (float64), volume_mw (float64),
 aggressor_side (str: buy/sell, optional - may not be available from all
 exchange data exports, degrade gracefully when missing)
 
-**Signals** (loaded entirely unless >1 GB):
+**Signals (CSV format for CsvSignalProvider)**:
+Columns: timestamp (timezone-aware datetime), value (float).
+Additional columns ignored.
+
+**Signals (Parquet format for built-in providers, stage 2+)**:
 Columns: published_at (datetime64[ns, UTC]), valid_from (datetime64[ns, UTC]),
 valid_to (datetime64[ns, UTC]), zone (str), value (float64), provider (str)
 
@@ -269,12 +318,14 @@ for DA data. Row groups sized at ~64 MB after compression.
 ## Dependencies
 
 Core (required):
+
 - pydantic >= 2.0
 - pyarrow (Parquet I/O and windowed replay)
 - numpy
-- click or typer (CLI)
+- click (CLI)
 
 Optional extras:
+
 - pandas (DataFrame output, installed via `pip install nexa-backtest[pandas]`)
 - onnxruntime (ML model inference, `pip install nexa-backtest[ml]`)
 - matplotlib or plotly (report charts, `pip install nexa-backtest[charts]`)
@@ -285,6 +336,12 @@ Optional extras:
 
 - **Look-ahead bias is the #1 backtesting mistake.** Signals must respect
   publication_offset. At time T, the algo can only see data published before T.
+  See the signal system section above for the exact semantics.
+- **publication_offset is a positive timedelta.** It means "published this
+  far ahead of delivery." A value for delivery period T was published at
+  T - offset. In code: `get_value(current_time)` returns the latest value
+  where `timestamp <= current_time + publication_offset`. Do not negate the
+  offset or use negative timedeltas.
 - **DA matching is price-taker only.** The algo's bid does not affect the
   clearing price. This is realistic for most participants but not for very
   large portfolios (market impact modelling is a v2 concern).
@@ -293,8 +350,9 @@ Optional extras:
 - **Window transitions happen between MTU boundaries.** Never evict or load
   data mid-event-processing.
 - **aggressor_side may not be available.** Some exchange data exports (e.g.,
-  EPEX) don't include it explicitly. The matching engine must degrade
-  gracefully when this field is missing.
+  EPEX SPOT) don't include it explicitly. The matching engine must degrade
+  gracefully when this field is missing. It may be possible to infer from
+  ActionCode/TransactionTime in some formats but this is fragile.
 - **product_id identifies the delivery period, not the trading session.**
   NO1-QH-0900 is the 09:00-09:15 delivery product. Orders for this product
   might be placed hours before delivery.
@@ -305,7 +363,7 @@ Optional extras:
 
 ## Makefile targets
 
-```
+```bash
 make install          # Install dev dependencies
 make test             # Run pytest
 make lint             # Run ruff check + ruff format --check
@@ -324,8 +382,6 @@ A feature is complete when:
 3. Tests cover the happy path and at least one error case
 4. `make ci` passes
 5. No regressions in existing tests
-6. Test coverage should be >80%
-7. If the feature adds a new algo hook or TradingContext method, the
+6. If the feature adds a new algo hook or TradingContext method, the
    protocol in context.py is updated and all three engine implementations
    (backtest, paper, live) are updated or stubbed
-8. Review the README file, check nothing major is missing, add additions if something is identified
