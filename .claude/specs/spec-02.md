@@ -65,6 +65,7 @@ This is the simplest way for a customer to bring their own data without
 implementing `SignalProvider` from scratch.
 
 Expected CSV format:
+
 ```csv
 timestamp,value
 2026-03-15T00:00:00+01:00,42.31
@@ -164,6 +165,7 @@ nexa run examples/simple_da_algo.py \
 ```
 
 The CLI needs to:
+
 - Accept a path to a Python file containing an algo
 - Import the file and find the algo (look for a subclass of `SimpleAlgo`
   or a function decorated with `@algo`)
@@ -208,6 +210,7 @@ synthetic forecast values (slightly noisy version of the actual clearing
 prices from the test fixture, offset by the publication delay).
 
 The example should be runnable via:
+
 ```bash
 nexa run examples/simple_da_algo.py \
     --exchange nordpool \
@@ -225,7 +228,7 @@ nexa run examples/simple_da_algo.py \
 For this task, signal CSV files are discovered by convention. The engine
 looks in `{data_dir}/signals/` for CSV files matching the signal name:
 
-```
+```text
 data_dir/
   signals/
     price_forecast.csv

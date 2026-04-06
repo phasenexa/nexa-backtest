@@ -1,11 +1,10 @@
-"""nexa-backtest: Backtesting framework for European power markets.
-
-Key public exports for Task 01. Additional exports will be added as
-subsequent tasks are implemented.
-"""
+"""nexa-backtest: Backtesting framework for European power markets."""
 
 from nexa_backtest._version import __version__
+from nexa_backtest.algo import SimpleAlgo
+from nexa_backtest.analysis.metrics import BacktestResult
 from nexa_backtest.context import SignalValue, TradingContext
+from nexa_backtest.engines.backtest import BacktestEngine
 from nexa_backtest.exceptions import (
     AlgoError,
     DataError,
@@ -16,6 +15,9 @@ from nexa_backtest.exceptions import (
     UnsupportedFeatureError,
     ValidationError,
 )
+from nexa_backtest.signals.base import SignalProvider, SignalSchema
+from nexa_backtest.signals.csv_loader import CsvSignalProvider
+from nexa_backtest.signals.registry import SignalRegistry
 from nexa_backtest.types import (
     MTU,
     AuctionInfo,
@@ -34,7 +36,10 @@ __all__ = [
     "MTU",
     "AlgoError",
     "AuctionInfo",
+    "BacktestEngine",
+    "BacktestResult",
     "CancelResult",
+    "CsvSignalProvider",
     "DataError",
     "ExchangeError",
     "Fill",
@@ -48,7 +53,11 @@ __all__ = [
     "PriceLevel",
     "Side",
     "SignalError",
+    "SignalProvider",
+    "SignalRegistry",
+    "SignalSchema",
     "SignalValue",
+    "SimpleAlgo",
     "TradingContext",
     "UnsupportedFeatureError",
     "ValidationError",

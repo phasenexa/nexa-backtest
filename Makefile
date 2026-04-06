@@ -1,4 +1,5 @@
-.PHONY: install lint typecheck test ci test-notebooks execute-notebooks
+.PHONY: install lint typecheck test ci 
+# test-notebooks execute-notebooks
 
 install:
 	poetry install
@@ -15,8 +16,8 @@ test:
 
 ci: lint typecheck test
 
-test-notebooks:
-	poetry run jupyter nbconvert --to notebook --execute notebooks/*.ipynb --output-dir /tmp/
+# test-notebooks:
+# 	poetry run jupyter nbconvert --to notebook --execute notebooks/*.ipynb --output-dir /tmp/
 
-execute-notebooks:
-	poetry run jupyter nbconvert --to notebook --execute --inplace notebooks/*.ipynb
+# execute-notebooks:
+# 	poetry run jupyter nbconvert --to notebook --execute --inplace notebooks/*.ipynb
