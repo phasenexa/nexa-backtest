@@ -52,9 +52,8 @@ jobs:
       - name: Run mypy type checking
         run: poetry run mypy src
 
-      # TODO: stability of this API this weekend is poor, so skipping for now
-      # - name: Run example notebooks
-      #   run: make test-notebooks
+      - name: Run example notebooks
+        run: make test-notebooks
 
       - name: Run tests with coverage
         run: |
