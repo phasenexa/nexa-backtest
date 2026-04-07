@@ -40,6 +40,18 @@ pip install nexa-backtest[live]         # Live trading via nexa-connect
 pip install nexa-backtest[all]          # Everything
 ```
 
+## Walkthrough Notebook
+
+New to backtesting or power markets? Start here:
+
+**[notebooks/backtester_walkthrough.ipynb](notebooks/backtester_walkthrough.ipynb)**
+
+A guided notebook covering: what a backtester is, MTUs, DA auctions, gate closures, the price-taker assumption, writing your first algo, running a backtest, interpreting every result metric, the signal system, and look-ahead bias prevention. Runs end-to-end against the included fixture data with no extra setup.
+
+```bash
+jupyter notebook notebooks/backtester_walkthrough.ipynb
+```
+
 ## Quick Start
 
 ### Write an algo
