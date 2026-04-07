@@ -29,6 +29,11 @@ pytest-cov = ">=4.1"
 mypy = ">=1.8"
 ruff = ">=0.3"
 pandas-stubs = ">=2.0"
+matplotlib = "^3.8"
+jupyter = "^1.0"
+nbmake = "^1.5"
+nbconvert = "^7.0"
+ipykernel = "^6.0"
 
 [tool.ruff]
 target-version = "py311"
