@@ -8,6 +8,7 @@ All datetimes are timezone-aware.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -310,3 +311,32 @@ class AuctionInfo(BaseModel):
     auction_type: str  # "DA" | "IDA"
     gate_closure_time: datetime
     zone: str
+
+
+@dataclass(frozen=True)
+class EquitySnapshot:
+    """Capital state at a point in time.
+
+    Recorded after each auction period with trading activity, these snapshots
+    form the equity curve used to compute time-series metrics such as Sharpe
+    ratio and max drawdown.
+
+    For DA-only backtesting, ``unrealised_pnl`` is always zero because DA
+    auctions settle immediately at the clearing price. The field exists for
+    IDC compatibility in later stages.
+
+    Attributes:
+        timestamp: Timezone-aware time of this snapshot (typically fill time).
+        realised_pnl: Cumulative realised PnL to this point in EUR.
+        unrealised_pnl: Mark-to-market of open positions in EUR (zero for DA).
+        total_equity: ``initial_capital + realised_pnl + unrealised_pnl``.
+        cash: Cash remaining after settled trades.
+        net_position_mw: Total net MW across all products (zero after DA settlement).
+    """
+
+    timestamp: datetime
+    realised_pnl: Decimal
+    unrealised_pnl: Decimal
+    total_equity: Decimal
+    cash: Decimal
+    net_position_mw: Decimal

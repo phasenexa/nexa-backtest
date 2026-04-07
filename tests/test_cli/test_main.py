@@ -218,3 +218,97 @@ class TestRunCommand:
         )
         assert result.exit_code != 0
         assert "SimpleAlgo" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Tests: --output flag (spec-03)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputFlag:
+    @pytest.fixture
+    def data_dir(self, tmp_path: Path) -> Path:
+        _write_da_prices(tmp_path)
+        return tmp_path
+
+    @pytest.fixture
+    def algo_file(self, tmp_path: Path) -> Path:
+        code = """
+            from nexa_backtest.algo import SimpleAlgo
+            from nexa_backtest.context import TradingContext
+            from nexa_backtest.types import AuctionInfo, Order
+            from decimal import Decimal
+
+            class BuyAlgo(SimpleAlgo):
+                def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:
+                    ctx.place_order(Order.buy(
+                        product_id=auction.product_id,
+                        volume_mw=Decimal('1'),
+                        price_eur_mwh=Decimal('999'),
+                    ))
+        """
+        return _write_algo(tmp_path / "buy_algo.py", code)
+
+    def _run(
+        self,
+        algo_file: Path,
+        data_dir: Path,
+        output: str,
+        extra_args: list[str] | None = None,
+    ) -> object:
+        from click.testing import CliRunner
+
+        runner = CliRunner()
+        args = [
+            "run",
+            str(algo_file),
+            "--exchange",
+            "nordpool",
+            "--start",
+            "2026-03-01",
+            "--end",
+            "2026-03-01",
+            "--products",
+            "NO1_DA",
+            "--data-dir",
+            str(data_dir),
+            "--capital",
+            "100000",
+            "--output",
+            output,
+        ]
+        if extra_args:
+            args.extend(extra_args)
+        return runner.invoke(cli, args)
+
+    def test_html_output_created(self, algo_file: Path, data_dir: Path, tmp_path: Path) -> None:
+        out = str(tmp_path / "report.html")
+        result = self._run(algo_file, data_dir, out)
+        assert result.exit_code == 0, result.output
+        assert Path(out).exists()
+        html = Path(out).read_text(encoding="utf-8")
+        assert "<!DOCTYPE html" in html
+
+    def test_json_output_created(self, algo_file: Path, data_dir: Path, tmp_path: Path) -> None:
+        import json
+
+        out = str(tmp_path / "result.json")
+        result = self._run(algo_file, data_dir, out)
+        assert result.exit_code == 0, result.output
+        assert Path(out).exists()
+        data = json.loads(Path(out).read_text(encoding="utf-8"))
+        assert "algo_name" in data
+
+    def test_parquet_output_created(self, algo_file: Path, data_dir: Path, tmp_path: Path) -> None:
+        out = str(tmp_path / "parquet_out")
+        result = self._run(algo_file, data_dir, out)
+        assert result.exit_code == 0, result.output
+        assert (Path(out) / "metadata.json").exists()
+
+    def test_summary_still_printed_with_output(
+        self, algo_file: Path, data_dir: Path, tmp_path: Path
+    ) -> None:
+        out = str(tmp_path / "r.html")
+        result = self._run(algo_file, data_dir, out)
+        assert result.exit_code == 0, result.output
+        assert "nordpool" in result.output  # summary always printed

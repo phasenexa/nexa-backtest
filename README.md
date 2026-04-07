@@ -306,6 +306,7 @@ loader = NexaMarketdataLoader(
 **Data format examples (shown as CSV for clarity, stored as Parquet):**
 
 DA clearing prices:
+
 ```csv
 timestamp,zone,price_eur_mwh,volume_mwh
 2026-03-15T00:00:00+01:00,NO1,42.31,1250.5
@@ -314,6 +315,7 @@ timestamp,zone,price_eur_mwh,volume_mwh
 ```
 
 IDC events:
+
 ```csv
 timestamp,event_type,order_id,zone,product_id,side,price_eur_mwh,volume_mw,remaining_mw
 2026-03-15T08:12:03.412+01:00,new,ord-88291,NO1,NO1-QH-0900,buy,52.40,5.0,5.0

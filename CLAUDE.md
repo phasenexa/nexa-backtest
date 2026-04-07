@@ -379,7 +379,7 @@ A feature is complete when:
 
 1. All new code has type hints and passes mypy --strict
 2. All public API has Google-style docstrings
-3. Tests cover the happy path and at least one error case
+3. Tests cover the happy path and at least one error case (aim for >88% code coverage)
 4. `make ci` passes
 5. No regressions in existing tests
 6. If the feature adds a new algo hook or TradingContext method, the

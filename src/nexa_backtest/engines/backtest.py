@@ -20,8 +20,15 @@ from pathlib import Path
 from typing import Any
 
 from nexa_backtest.algo import SimpleAlgo
-from nexa_backtest.analysis.metrics import BacktestResult
+from nexa_backtest.analysis.metrics import (
+    BacktestResult,
+    compute_fill_pnl,
+    compute_max_drawdown,
+    compute_profit_factor,
+    compute_sharpe,
+)
 from nexa_backtest.analysis.pnl import compute_pnl
+from nexa_backtest.analysis.vwap import compute_market_vwap
 from nexa_backtest.context import SignalValue, TradingContext
 from nexa_backtest.data.loader import ParquetLoader
 from nexa_backtest.engines.clock import SimulatedClock
@@ -34,6 +41,7 @@ from nexa_backtest.types import (
     MTU,
     AuctionInfo,
     CancelResult,
+    EquitySnapshot,
     Fill,
     Order,
     OrderBook,
@@ -407,10 +415,15 @@ class BacktestEngine:
         # Auto-discover CSVs for any subscribed signals not yet registered
         self._discover_signals(registry)
 
+        # Compute market VWAP upfront — required for equity curve and per-fill PnL
+        market_vwap = compute_market_vwap(market_data)
+
         # Group products by delivery day
         market_data["delivery_date"] = market_data["timestamp"].dt.date
 
         all_fills: list[Fill] = []
+        equity_snapshots: list[EquitySnapshot] = []
+        cumulative_pnl = Decimal("0")
 
         for delivery_date, day_data in market_data.groupby("delivery_date"):
             auction_time = self._auction_time(delivery_date)  # type: ignore[arg-type]
@@ -452,6 +465,7 @@ class BacktestEngine:
             orders = list(context._pending_orders.values())
             context._pending_orders.clear()
 
+            day_fills: list[Fill] = []
             for order in orders:
                 clearing = context._clearing_prices.get(order.product_id)
                 if clearing is None:
@@ -462,16 +476,51 @@ class BacktestEngine:
                     continue
 
                 matcher = DAAuctionMatcher(clearing_price=clearing, fill_timestamp=fill_time)
-                result = matcher.match(order)
+                match_result = matcher.match(order)
 
-                if result.fill is not None:
-                    context._record_fill(result.fill)
-                    all_fills.append(result.fill)
-                    self._algo.on_fill(context, result.fill)
+                if match_result.fill is not None:
+                    context._record_fill(match_result.fill)
+                    all_fills.append(match_result.fill)
+                    day_fills.append(match_result.fill)
+                    self._algo.on_fill(context, match_result.fill)
+
+            # Record equity snapshot after each day with trading activity
+            if day_fills:
+                day_pnl = sum(
+                    (compute_fill_pnl(f, market_vwap) for f in day_fills),
+                    Decimal("0"),
+                )
+                cumulative_pnl += day_pnl
+                equity_snapshots.append(
+                    EquitySnapshot(
+                        timestamp=fill_time,
+                        realised_pnl=cumulative_pnl,
+                        unrealised_pnl=Decimal("0"),
+                        total_equity=self._capital + cumulative_pnl,
+                        cash=self._capital + cumulative_pnl,
+                        net_position_mw=Decimal("0"),
+                    )
+                )
 
         self._algo.on_teardown(context)
 
         pnl = compute_pnl(all_fills, market_data)
+
+        # Compute advanced metrics
+        sharpe = compute_sharpe(equity_snapshots)
+        max_dd, max_dd_pct = compute_max_drawdown(equity_snapshots)
+        profit_fac = compute_profit_factor(all_fills, market_vwap)
+
+        avg_trade = pnl.total_alpha_eur / Decimal(len(all_fills)) if all_fills else Decimal("0")
+
+        best_fill: Fill | None = None
+        worst_fill: Fill | None = None
+        if all_fills:
+            fill_pnls = [(f, compute_fill_pnl(f, market_vwap)) for f in all_fills]
+            best_fill = max(fill_pnls, key=lambda x: x[1])[0]
+            worst_fill = min(fill_pnls, key=lambda x: x[1])[0]
+
+        duration = (self._end - self._start).days + 1
 
         return BacktestResult(
             algo_name=type(self._algo).__name__,
@@ -480,6 +529,16 @@ class BacktestEngine:
             end=self._end,
             fills=tuple(all_fills),
             pnl=pnl,
+            equity_curve=tuple(equity_snapshots),
+            initial_capital=self._capital,
+            sharpe_ratio=sharpe,
+            max_drawdown=max_dd,
+            max_drawdown_pct=max_dd_pct,
+            profit_factor=profit_fac,
+            avg_trade_pnl=avg_trade,
+            best_trade=best_fill,
+            worst_trade=worst_fill,
+            duration_days=duration,
         )
 
     # ------------------------------------------------------------------

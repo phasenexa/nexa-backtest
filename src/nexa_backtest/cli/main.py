@@ -69,6 +69,15 @@ def cli() -> None:
     show_default=True,
     help="Starting capital in EUR.",
 )
+@click.option(
+    "--output",
+    default=None,
+    help=(
+        "Write report to this file path. Format is inferred from the extension: "
+        ".html (HTML report), .json (JSON export), or no extension / directory "
+        "(Parquet export). Summary is always printed to stdout."
+    ),
+)
 def run_command(
     algo_file: str,
     exchange: str,
@@ -77,11 +86,17 @@ def run_command(
     products: tuple[str, ...],
     data_dir: str,
     capital: float,
+    output: str | None,
 ) -> None:
     """Run a backtest from ALGO_FILE and print the PnL summary.
 
     ALGO_FILE must contain exactly one subclass of SimpleAlgo. If it contains
     multiple subclasses an error is raised.
+
+    Use --output to additionally write a report file.  The format is inferred
+    from the file extension: ``.html`` for an HTML report, ``.json`` for JSON,
+    or a path without a recognised extension is treated as a directory for
+    Parquet output.
     """
     try:
         algo_class = _load_algo_class(algo_file)
@@ -108,6 +123,22 @@ def run_command(
         raise click.ClickException(f"Unexpected error during backtest: {exc}") from exc
 
     click.echo(result.summary())
+
+    if output is not None:
+        output_path = Path(output)
+        suffix = output_path.suffix.lower()
+        try:
+            if suffix == ".html":
+                result.to_html(output)
+                click.echo(f"HTML report written to: {output}")
+            elif suffix == ".json":
+                result.to_json(output)
+                click.echo(f"JSON export written to: {output}")
+            else:
+                result.to_parquet(output)
+                click.echo(f"Parquet export written to: {output}/")
+        except Exception as exc:
+            raise click.ClickException(f"Failed to write output to '{output}': {exc}") from exc
 
 
 # ------------------------------------------------------------------

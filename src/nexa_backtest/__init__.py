@@ -2,7 +2,7 @@
 
 from nexa_backtest._version import __version__
 from nexa_backtest.algo import SimpleAlgo
-from nexa_backtest.analysis.metrics import BacktestResult
+from nexa_backtest.analysis.metrics import BacktestResult, DailyPnL
 from nexa_backtest.context import SignalValue, TradingContext
 from nexa_backtest.engines.backtest import BacktestEngine
 from nexa_backtest.exceptions import (
@@ -22,6 +22,7 @@ from nexa_backtest.types import (
     MTU,
     AuctionInfo,
     CancelResult,
+    EquitySnapshot,
     Fill,
     Order,
     OrderBook,
@@ -40,7 +41,9 @@ __all__ = [
     "BacktestResult",
     "CancelResult",
     "CsvSignalProvider",
+    "DailyPnL",
     "DataError",
+    "EquitySnapshot",
     "ExchangeError",
     "Fill",
     "MatchingError",
