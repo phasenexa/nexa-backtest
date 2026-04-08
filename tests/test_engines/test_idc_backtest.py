@@ -649,7 +649,7 @@ class TestIDCContextGetOrderbook:
 
         from nexa_backtest.algo import SimpleAlgo
         from nexa_backtest.engines.backtest import BacktestEngine
-        from nexa_backtest.types import AuctionInfo, Order
+        from nexa_backtest.types import AuctionInfo
 
         class _Algo(SimpleAlgo):
             def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:

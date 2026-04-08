@@ -18,7 +18,6 @@ from nexa_backtest.exchanges.nordpool import (
 )
 from nexa_backtest.types import Order, Side  # Side used for Order.market()
 
-
 # ---------------------------------------------------------------------------
 # is_idc_product
 # ---------------------------------------------------------------------------

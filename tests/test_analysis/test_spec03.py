@@ -665,9 +665,9 @@ class TestDrawdownChartPeakUpdate:
 class TestJsonSerialiserTypeError:
     def test_non_decimal_non_serialisable_raises(self, tmp_path: Path) -> None:
         """_json's default handler raises TypeError for unknown types."""
-        from nexa_backtest.analysis.report import _json
-
         import pytest
+
+        from nexa_backtest.analysis.report import _json
 
         with pytest.raises(TypeError):
             _json({"key": object()})
@@ -684,24 +684,21 @@ class TestPandasImportError:
         from unittest.mock import patch
 
         result = _result(equity=(_snap(datetime(2026, 3, 1, 13, tzinfo=UTC), 100_000),))
-        with patch.dict(sys.modules, {"pandas": None}):
-            with pytest.raises(ImportError, match="pandas"):
-                result.equity_curve_df()
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.equity_curve_df()
 
     def test_trades_df_raises_when_pandas_missing(self) -> None:
         import sys
         from unittest.mock import patch
 
         result = _result(fills=(_fill(45.0),))
-        with patch.dict(sys.modules, {"pandas": None}):
-            with pytest.raises(ImportError, match="pandas"):
-                result.trades_df()
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.trades_df()
 
     def test_daily_pnl_df_raises_when_pandas_missing(self) -> None:
         import sys
         from unittest.mock import patch
 
         result = _result(fills=(_fill(45.0, ts=datetime(2026, 3, 1, 10, tzinfo=UTC)),))
-        with patch.dict(sys.modules, {"pandas": None}):
-            with pytest.raises(ImportError, match="pandas"):
-                result.daily_pnl_df()
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.daily_pnl_df()
