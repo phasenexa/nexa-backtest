@@ -464,3 +464,211 @@ class TestMultipleProducts:
 
         # Ask on p1 should not match a buy on p2
         assert len(fills) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: edge cases for place_algo_order
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceAlgoOrderEdgeCases:
+    def test_zero_volume_order_returns_no_fills(self) -> None:
+        """An order with volume_mw=0 should be a no-op."""
+        engine = ContinuousMatchingEngine()
+        engine.process_historical_event(_new_order(side="sell", price=50.0))
+
+        order = Order.buy(PRODUCT, volume_mw=0, price_eur_mwh=Decimal("55"))
+        fills = engine.place_algo_order(order, _ts(1))
+
+        assert fills == []
+        assert order.order_id not in engine._algo_states
+
+    def test_sell_order_fills_against_best_bid_immediately(self) -> None:
+        """Algo sell at 49.00 should fill against historical bid at 50.00."""
+        engine = ContinuousMatchingEngine()
+        engine.process_historical_event(_new_order(side="buy", price=50.0, order_id="bid-1"))
+
+        algo_order = Order.sell(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("49.00"))
+        fills = engine.place_algo_order(algo_order, _ts(1))
+
+        assert len(fills) == 1
+        assert fills[0].price == Decimal("50.0")
+        assert fills[0].side == Side.SELL
+        assert fills[0].volume == Decimal("5")
+
+    def test_sell_order_partial_fill_leaves_remainder(self) -> None:
+        """Historical bid has 3 MW; algo wants 10 MW → 7 MW rest."""
+        engine = ContinuousMatchingEngine()
+        engine.process_historical_event(
+            _new_order(side="buy", price=50.0, volume=3.0, order_id="bid-1")
+        )
+
+        algo_order = Order.sell(PRODUCT, volume_mw=10, price_eur_mwh=Decimal("48.00"))
+        fills = engine.place_algo_order(algo_order, _ts(1))
+
+        assert len(fills) == 1
+        assert fills[0].volume == Decimal("3")
+        assert algo_order.order_id in engine._algo_states
+        assert engine._algo_states[algo_order.order_id].remaining_mw == Decimal("7")
+
+    def test_sell_order_price_above_bid_no_fill(self) -> None:
+        """Algo sell at 55.00 should not fill against bid at 50.00."""
+        engine = ContinuousMatchingEngine()
+        engine.process_historical_event(_new_order(side="buy", price=50.0, order_id="bid-1"))
+
+        algo_order = Order.sell(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("55.00"))
+        fills = engine.place_algo_order(algo_order, _ts(1))
+
+        assert fills == []
+        assert algo_order.order_id in engine._algo_states
+
+
+# ---------------------------------------------------------------------------
+# Test: get_resting_algo_order_ids
+# ---------------------------------------------------------------------------
+
+
+class TestGetRestingAlgoOrderIds:
+    def test_empty_initially(self) -> None:
+        engine = ContinuousMatchingEngine()
+        assert engine.get_resting_algo_order_ids() == []
+
+    def test_returns_resting_order_ids(self) -> None:
+        engine = ContinuousMatchingEngine()
+        order = Order.buy(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("40"))
+        engine.place_algo_order(order, _ts(0))
+
+        ids = engine.get_resting_algo_order_ids()
+        assert order.order_id in ids
+
+    def test_cleared_after_fill(self) -> None:
+        engine = ContinuousMatchingEngine()
+        order = Order.buy(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("55"))
+        engine.place_algo_order(order, _ts(0))
+
+        # Historical ask arrives — fills the resting buy
+        engine.process_historical_event(_new_order(side="sell", price=50.0, volume=5.0))
+
+        assert order.order_id not in engine.get_resting_algo_order_ids()
+
+
+# ---------------------------------------------------------------------------
+# Test: unknown event type returns empty list
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownEventType:
+    def test_unknown_event_type_in_market_data_update_returns_empty(self) -> None:
+        """A MarketDataUpdate with an unknown event_type updates nothing and returns []."""
+        engine = ContinuousMatchingEngine()
+
+        unknown_event = MarketDataUpdate(
+            timestamp=_ts(),
+            product_id=PRODUCT,
+            event_type="unknown_type",
+            order_id="unk-1",
+            side="sell",
+            price_eur_mwh=Decimal("50"),
+            volume_mw=Decimal("5"),
+            remaining_mw=Decimal("5"),
+        )
+        fills = engine.process_historical_event(unknown_event)
+        # Goes through _process_market_data_update which returns [] for unknown type
+        assert fills == []
+
+    def test_non_union_object_returns_empty(self) -> None:
+        """An object that is neither MarketDataUpdate nor HistoricalTrade returns []."""
+        engine = ContinuousMatchingEngine()
+
+        # Pass an arbitrary object — hits the final `return []` branch
+        class _FakeEvent:
+            pass
+
+        fills = engine.process_historical_event(_FakeEvent())  # type: ignore[arg-type]
+        assert fills == []
+
+
+# ---------------------------------------------------------------------------
+# Test: product mismatch in _check_algo_orders_vs_new_hist
+# ---------------------------------------------------------------------------
+
+
+class TestProductMismatchInHistCheck:
+    def test_algo_order_for_different_product_not_matched(self) -> None:
+        """Algo order on product A should not be matched by hist event on product B."""
+        engine = ContinuousMatchingEngine()
+        other_product = "NO1-QH-0915"
+
+        # Algo has a resting buy on other_product
+        algo_order = Order.buy(other_product, volume_mw=5, price_eur_mwh=Decimal("55"))
+        engine.place_algo_order(algo_order, _ts(0))
+
+        # Historical sell arrives for PRODUCT — different product
+        hist_sell = MarketDataUpdate(
+            timestamp=_ts(5),
+            product_id=PRODUCT,
+            event_type="new",
+            order_id="hist-x",
+            side="sell",
+            price_eur_mwh=Decimal("50"),
+            volume_mw=Decimal("10"),
+            remaining_mw=Decimal("10"),
+        )
+        fills = engine.process_historical_event(hist_sell)
+
+        # No fill because products don't match
+        assert fills == []
+        assert algo_order.order_id in engine._algo_states
+
+    def test_trade_for_different_product_not_matched(self) -> None:
+        """A historical trade on product B should not fill a resting order on product A."""
+        engine = ContinuousMatchingEngine()
+        other_product = "NO1-QH-0915"
+
+        algo_order = Order.buy(other_product, volume_mw=5, price_eur_mwh=Decimal("55"))
+        engine.place_algo_order(algo_order, _ts(0))
+
+        trade = HistoricalTrade(
+            timestamp=_ts(5),
+            product_id=PRODUCT,  # different product
+            trade_id="t-1",
+            price_eur_mwh=Decimal("50"),
+            volume_mw=Decimal("5"),
+            aggressor_side="sell",
+        )
+        fills = engine.process_historical_event(trade)
+
+        assert fills == []
+        assert algo_order.order_id in engine._algo_states
+
+
+# ---------------------------------------------------------------------------
+# Test: missing aggressor_side for resting sell (fallback path)
+# ---------------------------------------------------------------------------
+
+
+class TestMissingAggressorSideForSell:
+    def test_resting_sell_filled_when_no_aggressor(self) -> None:
+        """Without aggressor_side, a resting sell at the trade price is filled."""
+        engine = ContinuousMatchingEngine()
+
+        algo_sell = Order.sell(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("50.00"))
+        engine.place_algo_order(algo_sell, _ts(0))
+
+        trade = _trade_event(price=50.00, volume=5.0, aggressor_side=None)
+        fills = engine.process_historical_event(trade)
+
+        assert len(fills) == 1
+        assert fills[0].side == Side.SELL
+
+    def test_resting_sell_not_filled_when_trade_price_below(self) -> None:
+        """Resting sell at 55.00 should not fill on trade at 50.00 (price not OK)."""
+        engine = ContinuousMatchingEngine()
+
+        algo_sell = Order.sell(PRODUCT, volume_mw=5, price_eur_mwh=Decimal("55.00"))
+        engine.place_algo_order(algo_sell, _ts(0))
+
+        trade = _trade_event(price=50.00, volume=5.0, aggressor_side=None)
+        fills = engine.process_historical_event(trade)
+
+        assert fills == []

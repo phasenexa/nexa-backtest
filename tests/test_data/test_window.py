@@ -358,3 +358,47 @@ class TestSlidingWindow:
         # Maximum memory should be bounded to a few row groups (not all 6)
         # Each row group is ~600 rows x ~200 bytes ~= 120 KB; 4 RGs ~= 500 KB
         assert peak_bytes < 5 * 1024 * 1024  # 5 MB upper bound for the tiny fixture
+
+    def test_events_between_no_overlap_returns_empty(self, tmp_path: Path) -> None:
+        """events_between with a range that doesn't overlap loaded tables returns nothing."""
+        events_dir = tmp_path / "idc_events"
+        t_data = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+        path = events_dir / "NO1_2026_03.parquet"
+        _write_parquet(path, [_make_event_row(t_data, order_id="o1")], rows_per_rg=1)
+
+        manifest = DataManifest(data_dir=tmp_path, zone="NO1")
+        window = SlidingWindow(
+            manifest, lookback=timedelta(hours=1), lookahead=timedelta(hours=1)
+        )
+        window.advance_to(t_data)  # load the row group
+
+        # Query a range entirely before the loaded data
+        t_early = datetime(2026, 3, 1, 6, 0, tzinfo=UTC)
+        events = list(window.events_between(t_early, t_early + timedelta(minutes=1)))
+        assert events == []
+
+
+# ---------------------------------------------------------------------------
+# DataManifest.zone property
+# ---------------------------------------------------------------------------
+
+
+class TestDataManifestZone:
+    def test_zone_property(self, tmp_path: Path) -> None:
+        events_dir = tmp_path / "idc_events"
+        t = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        path = events_dir / "NO1_2026_03.parquet"
+        _write_parquet(path, [_make_event_row(t)], rows_per_rg=1)
+
+        manifest = DataManifest(data_dir=tmp_path, zone="NO1")
+        assert manifest.zone == "NO1"
+
+    def test_zone_property_different_zone(self, tmp_path: Path) -> None:
+        events_dir = tmp_path / "idc_events"
+        t = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        path = events_dir / "SE3_2026_03.parquet"
+        rows = [_make_event_row(t, order_id="se3-1")]
+        _write_parquet(path, rows, rows_per_rg=1)
+
+        manifest = DataManifest(data_dir=tmp_path, zone="SE3")
+        assert manifest.zone == "SE3"
