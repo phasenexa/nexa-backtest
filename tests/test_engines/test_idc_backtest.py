@@ -838,9 +838,7 @@ class TestIDCSignalLoop:
         signals_dir.mkdir()
         signal_csv = signals_dir / "wind_forecast.csv"
         signal_csv.write_text(
-            "timestamp,value\n"
-            "2026-03-01T00:00:00+00:00,12.5\n"
-            "2026-03-01T12:00:00+00:00,15.0\n"
+            "timestamp,value\n2026-03-01T00:00:00+00:00,12.5\n2026-03-01T12:00:00+00:00,15.0\n"
         )
 
         signal_calls: list[tuple[str, float]] = []

@@ -367,9 +367,7 @@ class TestSlidingWindow:
         _write_parquet(path, [_make_event_row(t_data, order_id="o1")], rows_per_rg=1)
 
         manifest = DataManifest(data_dir=tmp_path, zone="NO1")
-        window = SlidingWindow(
-            manifest, lookback=timedelta(hours=1), lookahead=timedelta(hours=1)
-        )
+        window = SlidingWindow(manifest, lookback=timedelta(hours=1), lookahead=timedelta(hours=1))
         window.advance_to(t_data)  # load the row group
 
         # Query a range entirely before the loaded data

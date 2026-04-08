@@ -191,9 +191,7 @@ class TestValidateOrder:
 
     def test_volume_below_minimum(self) -> None:
         adapter = NordPoolAdapter("NO1")
-        order = Order.buy(
-            "NO1-QH-0900", volume_mw=Decimal("0.05"), price_eur_mwh=Decimal("50")
-        )
+        order = Order.buy("NO1-QH-0900", volume_mw=Decimal("0.05"), price_eur_mwh=Decimal("50"))
         error = adapter.validate_order(order)
         assert error is not None
         assert "minimum" in error.lower()
@@ -229,14 +227,10 @@ class TestValidateOrder:
 
     def test_price_at_minimum_is_valid(self) -> None:
         adapter = NordPoolAdapter("NO1")
-        order = Order.sell(
-            "NO1-QH-0900", volume_mw=Decimal("1"), price_eur_mwh=NORDPOOL_MIN_PRICE
-        )
+        order = Order.sell("NO1-QH-0900", volume_mw=Decimal("1"), price_eur_mwh=NORDPOOL_MIN_PRICE)
         assert adapter.validate_order(order) is None
 
     def test_price_at_maximum_is_valid(self) -> None:
         adapter = NordPoolAdapter("NO1")
-        order = Order.buy(
-            "NO1-QH-0900", volume_mw=Decimal("1"), price_eur_mwh=NORDPOOL_MAX_PRICE
-        )
+        order = Order.buy("NO1-QH-0900", volume_mw=Decimal("1"), price_eur_mwh=NORDPOOL_MAX_PRICE)
         assert adapter.validate_order(order) is None
