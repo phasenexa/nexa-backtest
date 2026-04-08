@@ -549,3 +549,156 @@ class TestParquetExport:
         out = tmp_path / "out"
         result.to_parquet(str(out))
         assert not (out / "trades.parquet").exists()
+
+
+# ---------------------------------------------------------------------------
+# 9. Pandas DataFrame export methods
+# ---------------------------------------------------------------------------
+
+
+class TestPandasDataFrameMethods:
+    def test_equity_curve_df_columns(self) -> None:
+        """equity_curve_df returns expected columns."""
+        ts = datetime(2026, 3, 1, 13, tzinfo=UTC)
+        snap = _snap(ts, 100_500, realised=500)
+        result = _result(equity=(snap,))
+
+        df = result.equity_curve_df()
+        assert set(df.columns) == {
+            "timestamp",
+            "realised_pnl",
+            "unrealised_pnl",
+            "total_equity",
+            "cash",
+            "net_position_mw",
+        }
+        assert len(df) == 1
+        assert df["total_equity"].iloc[0] == pytest.approx(100_500.0)
+
+    def test_equity_curve_df_empty(self) -> None:
+        """Empty equity curve returns empty DataFrame."""
+        result = _result(equity=())
+        df = result.equity_curve_df()
+        assert len(df) == 0
+
+    def test_trades_df_columns(self) -> None:
+        """trades_df returns expected columns."""
+        f = _fill(45.0)
+        result = _result(fills=(f,))
+
+        df = result.trades_df()
+        assert set(df.columns) == {
+            "timestamp",
+            "product_id",
+            "side",
+            "price",
+            "volume",
+            "order_id",
+        }
+        assert len(df) == 1
+        assert df["price"].iloc[0] == pytest.approx(45.0)
+
+    def test_trades_df_empty(self) -> None:
+        result = _result()
+        df = result.trades_df()
+        assert len(df) == 0
+
+    def test_daily_pnl_df_columns(self) -> None:
+        """daily_pnl_df returns expected columns."""
+        fills = (
+            _fill(45.0, ts=datetime(2026, 3, 1, 10, tzinfo=UTC)),
+            _fill(48.0, ts=datetime(2026, 3, 2, 10, tzinfo=UTC)),
+        )
+        result = _result(fills=fills, market_vwap=50.0)
+
+        df = result.daily_pnl_df()
+        assert set(df.columns) == {"date", "pnl", "volume_mw", "trade_count", "vwap_edge"}
+        assert len(df) == 2
+
+    def test_daily_pnl_df_empty(self) -> None:
+        result = _result()
+        df = result.daily_pnl_df()
+        assert len(df) == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Sharpe edge case: zero standard deviation
+# ---------------------------------------------------------------------------
+
+
+class TestSharpeZeroStd:
+    def test_flat_equity_returns_none(self) -> None:
+        """All returns identical → std_dev = 0 → Sharpe is undefined."""
+        t = lambda d: datetime(2026, 3, d, 13, tzinfo=UTC)  # noqa: E731
+        # Identical equity at every snapshot → returns are all 0
+        snaps = [_snap(t(d), 100_000) for d in range(1, 6)]
+        result = compute_sharpe(snaps)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 11. HTML report: drawdown chart with rising equity (peak update branch)
+# ---------------------------------------------------------------------------
+
+
+class TestDrawdownChartPeakUpdate:
+    def test_rising_equity_updates_peak(self, tmp_path: Path) -> None:
+        """Equity that only rises should produce zero drawdown — exercises peak update."""
+        snaps = (
+            _snap(datetime(2026, 3, 1, 9, tzinfo=UTC), 100_000),
+            _snap(datetime(2026, 3, 1, 10, tzinfo=UTC), 105_000),
+            _snap(datetime(2026, 3, 1, 11, tzinfo=UTC), 110_000),
+        )
+        result = _result(equity=snaps)
+        out = tmp_path / "report.html"
+        result.to_html(str(out))
+        html = out.read_text(encoding="utf-8")
+        # Report should contain "0" drawdown values
+        assert "chart-drawdown" in html
+
+
+# ---------------------------------------------------------------------------
+# 12. JSON serialiser TypeError for non-serialisable types
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSerialiserTypeError:
+    def test_non_decimal_non_serialisable_raises(self, tmp_path: Path) -> None:
+        """_json's default handler raises TypeError for unknown types."""
+        import pytest
+
+        from nexa_backtest.analysis.report import _json
+
+        with pytest.raises(TypeError):
+            _json({"key": object()})
+
+
+# ---------------------------------------------------------------------------
+# 13. Pandas ImportError when pandas not installed
+# ---------------------------------------------------------------------------
+
+
+class TestPandasImportError:
+    def test_equity_curve_df_raises_when_pandas_missing(self) -> None:
+        import sys
+        from unittest.mock import patch
+
+        result = _result(equity=(_snap(datetime(2026, 3, 1, 13, tzinfo=UTC), 100_000),))
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.equity_curve_df()
+
+    def test_trades_df_raises_when_pandas_missing(self) -> None:
+        import sys
+        from unittest.mock import patch
+
+        result = _result(fills=(_fill(45.0),))
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.trades_df()
+
+    def test_daily_pnl_df_raises_when_pandas_missing(self) -> None:
+        import sys
+        from unittest.mock import patch
+
+        result = _result(fills=(_fill(45.0, ts=datetime(2026, 3, 1, 10, tzinfo=UTC)),))
+        with patch.dict(sys.modules, {"pandas": None}), pytest.raises(ImportError, match="pandas"):
+            result.daily_pnl_df()

@@ -566,8 +566,8 @@ class BacktestResult:
         Args:
             path: Output directory path (created if it does not exist).
         """
-        import pyarrow as pa  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        import pyarrow as pa
+        import pyarrow.parquet as pq
 
         output_dir = Path(path)
         output_dir.mkdir(parents=True, exist_ok=True)

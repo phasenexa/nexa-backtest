@@ -111,3 +111,50 @@ class SimpleAlgo:
         Args:
             ctx: The trading context.
         """
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        """Called at each MTU boundary (every 15 minutes) during IDC replay.
+
+        Use this hook for periodic strategy evaluation in intraday continuous
+        markets.  Orders placed here are matched against the current state of
+        the historical order book before the next bar is processed.
+
+        Args:
+            ctx: The trading context.
+        """
+
+    def on_cancel(self, ctx: TradingContext, order_id: str, reason: str) -> None:
+        """Called when one of the algo's orders is cancelled.
+
+        This is fired both when the algo explicitly cancels an order *and*
+        when the engine cancels it automatically (e.g. gate closure).
+
+        Args:
+            ctx: The trading context.
+            order_id: ID of the cancelled order.
+            reason: Human-readable reason for the cancellation, e.g.
+                ``"gate_closure"`` or ``"algo_cancel"``.
+        """
+
+    def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
+        """Called when gate closes for an IDC product.
+
+        Any resting algo orders for ``product_id`` have already been cancelled
+        before this hook fires.
+
+        Args:
+            ctx: The trading context.
+            product_id: Exchange product identifier whose gate just closed.
+        """
+
+    def on_error(self, ctx: TradingContext, error: Exception) -> None:
+        """Called when an unhandled error occurs during event processing.
+
+        The default implementation re-raises the exception.  Override to
+        implement custom error handling or logging.
+
+        Args:
+            ctx: The trading context.
+            error: The exception that was raised.
+        """
+        raise error

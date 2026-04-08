@@ -43,8 +43,8 @@ class _MockContext:
     def get_orderbook(self, product_id: str) -> OrderBook:
         return OrderBook(
             product_id=product_id,
-            best_bid=PriceLevel(price=Decimal("49"), volume=Decimal("10")),
-            best_ask=PriceLevel(price=Decimal("51"), volume=Decimal("10")),
+            bids=[PriceLevel(price=Decimal("49"), volume=Decimal("10"))],
+            asks=[PriceLevel(price=Decimal("51"), volume=Decimal("10"))],
             timestamp=self.now(),
         )
 

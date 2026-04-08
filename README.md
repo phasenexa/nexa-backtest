@@ -19,6 +19,9 @@ nexa-backtest is purpose-built for this. It replays historical market conditions
 - **Two API levels.** `SimpleAlgo` with hooks for quick experiments. `@algo` with async event streams for full control.
 - **DA + IDC support.** Day-ahead auction matching (price-taker against historical clearing prices) and intraday continuous matching (price-time priority against historical order book).
 - **Signal system.** Plug in weather forecasts, DA prices, load forecasts, gas prices, or any time-series data. Built-in look-ahead bias prevention via `publication_offset`.
+- **Equity curve and advanced metrics.** Sharpe ratio, max drawdown, profit factor, and per-trade attribution tracked across every MTU. Not just a final PnL number.
+- **HTML reports.** Self-contained reports with equity curve, drawdown, daily PnL, and trade tables. Open in a browser, share with the team. No server required.
+- **Export to JSON or Parquet.** Equity curve, trade list, and daily PnL as structured data for downstream analysis.
 - **ML model integration.** Register ONNX or scikit-learn models and call `ctx.predict()` from your algo.
 - **Exchange adapters.** Nord Pool, EPEX SPOT, EEX. Each adapter declares its capabilities. Use block bids on an exchange that doesn't support them? The validator catches it before you run.
 - **Efficient replay.** DA data loads entirely (it's tiny). IDC data uses windowed replay via PyArrow row groups, keeping peak memory at 200-500 MB regardless of replay period.
@@ -103,16 +106,35 @@ result = BacktestEngine(
 ).run()
 
 print(result.summary())
-# Total PnL: +12,340.50 EUR
-# vs VWAP: +3.2%
-# Win rate: 62%
-# Trades: 186
+# Backtest Results: 2026-03-01 to 2026-03-31 (31 days)
+# Exchange: Nord Pool | Products: NO1_DA
+#
+#   Total PnL:        +12,340.50 EUR
+#   vs VWAP:           +0.65 EUR/MWh (+3.2%)
+#   Sharpe Ratio:      1.42
+#   Max Drawdown:     -4,200.00 EUR (-3.8%)
+#   Profit Factor:     1.85
+#
+#   Trades:            186
+#   Win Rate:          62.4%
+#   Avg Trade PnL:    +66.35 EUR
+#   Best Trade:       +840.00 EUR (NO1_DA 2026-03-14 08:00)
+#   Worst Trade:      -320.00 EUR (NO1_DA 2026-03-07 17:45)
+#
+#   Total Volume:      3,240 MW
+#   Initial Capital:   100,000.00 EUR
+#   Final Equity:      112,340.50 EUR
+
+# Export results
+result.to_html("reports/march_2026.html")   # self-contained HTML report
+result.to_json("results/march_2026.json")   # JSON with Decimal precision
+result.to_parquet("results/march_2026/")    # equity_curve, trades, daily_pnl
 ```
 
 Or run from the CLI:
 
 ```bash
-# Signal CSVs are discovered by convention in {data_dir}/signals/
+# Print summary to stdout
 nexa run my_algo.py \
     --exchange nordpool \
     --start 2026-03-01 \
@@ -120,7 +142,55 @@ nexa run my_algo.py \
     --products NO1_DA \
     --data-dir ./data \
     --capital 100000
+
+# Generate HTML report (format inferred from extension)
+nexa run my_algo.py \
+    --exchange nordpool \
+    --start 2026-03-01 \
+    --end 2026-03-31 \
+    --products NO1_DA \
+    --output reports/march.html
+
+# Generate JSON
+nexa run my_algo.py ... --output results/march.json
 ```
+
+### Backtest an IDC strategy
+
+```python
+class SpreadScalper(SimpleAlgo):
+    """Buy when the spread narrows; close before gate."""
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        for product_id in ctx.active_products():
+            book = ctx.get_orderbook(product_id)
+            if book.spread and book.spread < Decimal("1.0"):
+                ctx.place_order(Order.buy(
+                    product=product_id,
+                    volume_mw=5,
+                    price_eur=book.best_ask.price,
+                ))
+
+    def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
+        pos = ctx.get_position(product_id)
+        if pos.net_mw != 0:
+            ctx.place_order(Order.sell(
+                product=product_id,
+                volume_mw=abs(pos.net_mw),
+                price_eur=ctx.get_best_bid(product_id).price,
+            ))
+
+result = BacktestEngine(
+    algo=SpreadScalper(),
+    exchange="nordpool",
+    start=date(2026, 3, 1),
+    end=date(2026, 3, 31),
+    products=["NO1-QH"],   # all quarter-hour products for NO1
+    initial_capital=100_000,
+).run()
+```
+
+IDC mode is selected automatically when products match the `{zone}-QH-*` pattern. DA and IDC products can be mixed in a single backtest.
 
 ### Paper trade it (same algo, zero changes)
 
@@ -340,10 +410,19 @@ Upload the compiled binary. We run it but can't read it.
 ## CLI Reference
 
 ```bash
+# Run a backtest, print summary to stdout
 nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31
+
+# Run and export results (format inferred from extension: .html, .json, .parquet)
+nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
+    --output reports/march.html
+
+# IDC products
+nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
+    --products NO1-QH
+
 nexa validate my_algo.py --exchange nordpool
 nexa compile my_algo.py --output my_algo.so
-nexa report results.parquet --format html --output report.html
 ```
 
 ## Phase Nexa Ecosystem
@@ -362,21 +441,29 @@ nexa-backtest integrates with the wider Phase Nexa toolkit:
 
 | Feature | Status |
 |---------|--------|
-| Core types and protocols | Task 01 |
-| SimpleAlgo with DA hooks | Task 01 |
-| BacktestEngine (DA only) | Task 01 |
-| Nord Pool DA adapter | Task 01 |
-| Parquet data loader (DA) | Task 01 |
-| PnL + VWAP analysis | Task 01 |
-| Signal system + CSV loader | Task 02 |
-| CLI (`nexa run`) | Task 02 |
-| IDC continuous matching | Planned (Stage 2) |
-| Windowed replay | Planned (Stage 2) |
+| Core types and protocols | Done (Task 01) |
+| SimpleAlgo with DA hooks | Done (Task 01) |
+| BacktestEngine (DA only) | Done (Task 01) |
+| Nord Pool DA adapter | Done (Task 01) |
+| Parquet data loader (DA) | Done (Task 01) |
+| PnL + VWAP analysis | Done (Task 01) |
+| Signal system + CSV loader | Done (Task 02) |
+| CLI (`nexa run`) | Done (Task 02) |
+| Equity curve tracking | Done (Task 03) |
+| Sharpe ratio, max drawdown, profit factor | Done (Task 03) |
+| HTML report generation | Done (Task 03) |
+| JSON and Parquet export | Done (Task 03) |
+| `--output` flag on `nexa run` | Done (Task 03) |
+| IDC continuous matching engine | Done (Task 04) |
+| Windowed replay (SlidingWindow) | Done (Task 04) |
+| Nord Pool IDC adapter | Done (Task 04) |
+| SimpleAlgo IDC hooks (`on_bar`, `on_cancel`) | Done (Task 04) |
+| Order book access (`get_orderbook`, `get_best_bid/ask`) | Done (Task 04) |
+| Gate closure handling | Done (Task 04) |
+| IDC fixture generator | Done (Task 04) |
 | `@algo` low-level API | Planned (Stage 2) |
 | Built-in signal providers | Planned (Stage 2) |
 | EPEX SPOT / EEX adapters | Planned (Stage 2) |
-| HTML reports | Planned (Stage 2) |
-| Sharpe / drawdown / equity curve | Planned (Stage 2) |
 | Validation pipeline | Planned (Stage 3) |
 | ML model registry | Planned (Stage 3) |
 | Multi-algo replay | Planned (Stage 3) |
