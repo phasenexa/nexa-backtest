@@ -1,5 +1,4 @@
-.PHONY: install lint typecheck test ci 
-# test-notebooks execute-notebooks
+.PHONY: install lint typecheck test ci test-notebooks execute-notebooks
 
 install:
 	poetry install
