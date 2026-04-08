@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class Side(StrEnum):
@@ -68,21 +68,53 @@ class PriceLevel(BaseModel):
 
 
 class OrderBook(BaseModel):
-    """Snapshot of the best bid and ask for a product.
+    """Snapshot of the order book for a product.
 
     Attributes:
         product_id: Exchange product identifier, e.g. ``"NO1-QH-0900"``.
-        best_bid: Best bid price level, or ``None`` if no bids.
-        best_ask: Best ask price level, or ``None`` if no offers.
+        bids: All bid price levels, sorted best (highest price) first.
+        asks: All ask price levels, sorted best (lowest price) first.
         timestamp: Timezone-aware time at which this snapshot was taken.
+        best_bid: Best (highest) bid level, or ``None`` if no bids.
+        best_ask: Best (lowest) ask level, or ``None`` if no asks.
+        spread: ``best_ask.price - best_bid.price``, or ``None`` if either
+            side is empty.
+        mid_price: ``(best_bid.price + best_ask.price) / 2``, or ``None``
+            if either side is empty.
     """
 
     model_config = ConfigDict(frozen=True)
 
     product_id: str
-    best_bid: PriceLevel | None
-    best_ask: PriceLevel | None
+    bids: list[PriceLevel]
+    asks: list[PriceLevel]
     timestamp: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def best_bid(self) -> PriceLevel | None:
+        """Highest bid price level, or ``None`` if the bid side is empty."""
+        return self.bids[0] if self.bids else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def best_ask(self) -> PriceLevel | None:
+        """Lowest ask price level, or ``None`` if the ask side is empty."""
+        return self.asks[0] if self.asks else None
+
+    @property
+    def spread(self) -> Decimal | None:
+        """Best ask minus best bid. ``None`` if either side is empty."""
+        if self.best_bid and self.best_ask:
+            return self.best_ask.price - self.best_bid.price
+        return None
+
+    @property
+    def mid_price(self) -> Decimal | None:
+        """Mid-point price. ``None`` if either side is empty."""
+        if self.best_bid and self.best_ask:
+            return (self.best_bid.price + self.best_ask.price) / Decimal("2")
+        return None
 
 
 class Order(BaseModel):
@@ -311,6 +343,78 @@ class AuctionInfo(BaseModel):
     auction_type: str  # "DA" | "IDA"
     gate_closure_time: datetime
     zone: str
+
+
+@dataclass(frozen=True)
+class MarketEvent:
+    """Base class for all IDC market events replayed by the backtest engine.
+
+    Attributes:
+        timestamp: Timezone-aware time at which the event occurred.
+        product_id: Exchange product identifier, e.g. ``"NO1-QH-0900"``.
+    """
+
+    timestamp: datetime
+    product_id: str
+
+
+@dataclass(frozen=True)
+class MarketDataUpdate(MarketEvent):
+    """A change to the historical order book.
+
+    Attributes:
+        event_type: One of ``"new"``, ``"modify"``, ``"cancel"``, ``"trade"``.
+        order_id: Exchange order identifier.
+        side: ``"buy"`` or ``"sell"``.
+        price_eur_mwh: Order price in EUR/MWh.
+        volume_mw: Original order volume in MW.
+        remaining_mw: Remaining volume after the event.
+    """
+
+    event_type: str
+    order_id: str
+    side: str
+    price_eur_mwh: Decimal
+    volume_mw: Decimal
+    remaining_mw: Decimal
+
+
+@dataclass(frozen=True)
+class HistoricalTrade(MarketEvent):
+    """A trade that occurred in the historical data.
+
+    Used by :class:`~nexa_backtest.engines.matching.ContinuousMatchingEngine`
+    to determine whether the algo's resting orders would have been hit.
+
+    Attributes:
+        trade_id: Exchange trade identifier.
+        price_eur_mwh: Trade execution price in EUR/MWh.
+        volume_mw: Traded volume in MW.
+        aggressor_side: ``"buy"`` if a buyer placed the aggressive order,
+            ``"sell"`` if a seller did, or ``None`` when not available in
+            the exchange data export.
+    """
+
+    trade_id: str
+    price_eur_mwh: Decimal
+    volume_mw: Decimal
+    aggressor_side: str | None
+
+
+@dataclass(frozen=True)
+class GateClosureWarning(MarketEvent):
+    """Warning that gate closure for a product is approaching.
+
+    Attributes:
+        remaining: Time until gate closes.
+    """
+
+    remaining: timedelta
+
+
+@dataclass(frozen=True)
+class GateClosureEvent(MarketEvent):
+    """Gate has closed for a product; no further orders may be submitted."""
 
 
 @dataclass(frozen=True)

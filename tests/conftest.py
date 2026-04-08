@@ -71,8 +71,8 @@ def sample_orderbook(sample_product_id: str, utc_now: datetime) -> OrderBook:
     """A simple order book with one bid and one ask."""
     return OrderBook(
         product_id=sample_product_id,
-        best_bid=PriceLevel(price=Decimal("49.50"), volume=Decimal("20")),
-        best_ask=PriceLevel(price=Decimal("50.50"), volume=Decimal("15")),
+        bids=[PriceLevel(price=Decimal("49.50"), volume=Decimal("20"))],
+        asks=[PriceLevel(price=Decimal("50.50"), volume=Decimal("15"))],
         timestamp=utc_now,
     )
 

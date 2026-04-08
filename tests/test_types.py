@@ -92,8 +92,8 @@ class TestOrderBook:
     def test_none_bid_and_ask(self, utc_now: datetime) -> None:
         ob = OrderBook(
             product_id="NO1-QH-0900",
-            best_bid=None,
-            best_ask=None,
+            bids=[],
+            asks=[],
             timestamp=utc_now,
         )
         assert ob.best_bid is None

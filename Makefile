@@ -14,7 +14,7 @@ typecheck:
 test:
 	poetry run pytest --cov=src/nexa_backtest --cov-report=term-missing
 
-ci: lint typecheck test
+ci: lint typecheck test test-notebooks
 
 test-notebooks:
 	poetry run jupyter nbconvert --to notebook --execute notebooks/*.ipynb --output-dir /tmp/
