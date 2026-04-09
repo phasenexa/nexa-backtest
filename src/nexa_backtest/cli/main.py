@@ -27,6 +27,7 @@ from types import ModuleType
 import click
 
 from nexa_backtest.algo import SimpleAlgo
+from nexa_backtest.cli.validate import validate_command
 from nexa_backtest.engines.backtest import BacktestEngine
 from nexa_backtest.exceptions import NexaBacktestError
 
@@ -34,6 +35,9 @@ from nexa_backtest.exceptions import NexaBacktestError
 @click.group()
 def cli() -> None:
     """nexa-backtest: backtesting framework for European power markets."""
+
+
+cli.add_command(validate_command)
 
 
 @cli.command("run")
@@ -78,6 +82,19 @@ def cli() -> None:
         "(Parquet export). Summary is always printed to stdout."
     ),
 )
+@click.option(
+    "--validate",
+    "run_validation",
+    is_flag=True,
+    default=False,
+    help="Run the validation pipeline before starting the backtest.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="With --validate: treat warnings as errors.",
+)
 def run_command(
     algo_file: str,
     exchange: str,
@@ -87,6 +104,8 @@ def run_command(
     data_dir: str,
     capital: float,
     output: str | None,
+    run_validation: bool,
+    strict: bool,
 ) -> None:
     """Run a backtest from ALGO_FILE and print the PnL summary.
 
@@ -97,7 +116,21 @@ def run_command(
     from the file extension: ``.html`` for an HTML report, ``.json`` for JSON,
     or a path without a recognised extension is treated as a directory for
     Parquet output.
+
+    Use --validate to run the six-step validation pipeline before the backtest
+    starts. The backtest will not run if validation fails.
     """
+    if run_validation:
+        from nexa_backtest.validation.runner import ValidationRunner
+
+        click.echo(f"\nValidating {algo_file} against {exchange}...\n")
+        runner = ValidationRunner(algo_path=algo_file, exchange=exchange, strict=strict)
+        val_result = runner.run()
+        click.echo(val_result.summary())
+        if not val_result.passed:
+            raise click.ClickException("Validation failed. Fix the issues above before running.")
+        click.echo("")
+
     try:
         algo_class = _load_algo_class(algo_file)
     except NexaBacktestError as exc:

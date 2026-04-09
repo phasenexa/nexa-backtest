@@ -39,6 +39,9 @@ ipykernel = "^6.0"
 target-version = "py311"
 line-length = 100
 src = ["src"]
+exclude = [
+    "tests/fixtures/validation/syntax_error.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "ANN", "B", "C4", "SIM", "RUF"]
@@ -48,6 +51,8 @@ ignore = ["ANN401"]
 "tests/**" = ["ANN"]
 # HTML templates contain long embedded strings that cannot be meaningfully split
 "src/nexa_backtest/analysis/report.py" = ["E501"]
+# Validation test fixtures are intentionally broken in various ways
+"tests/fixtures/validation/syntax_error.py" = ["E999"]
 
 [tool.mypy]
 python_version = "3.11"
