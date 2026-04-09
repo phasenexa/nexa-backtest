@@ -183,6 +183,16 @@ def test_epex_validate_order_at_max_price_fails_for_nordpool() -> None:
     assert "maximum" in error.lower()
 
 
+def test_epex_validate_market_order_rejected(epex: EpexSpotAdapter) -> None:
+    """EPEX SPOT does not support market orders (price=None); validate_order must reject."""
+    from nexa_backtest.types import Side
+
+    order = Order.market("DE-LU-QH-0900", side=Side.BUY, volume_mw=1)
+    error = epex.validate_order(order)
+    assert error is not None
+    assert "market" in error.lower()
+
+
 def test_epex_submit_order_raises(epex: EpexSpotAdapter) -> None:
     order = Order.buy("DE-LU-QH-0900", volume_mw=1, price_eur_mwh=50)
     with pytest.raises(NotImplementedError):

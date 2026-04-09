@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from nexa_backtest import (
@@ -18,9 +19,15 @@ from nexa_backtest import (
     algo,
 )
 from nexa_backtest.context import TradingContext
-from nexa_backtest.engines.backtest import AsyncAlgoDispatcher, SimpleAlgoDispatcher
+from nexa_backtest.engines.backtest import (
+    AsyncAlgoDispatcher,
+    SimpleAlgoDispatcher,
+    _BacktestContext,
+)
+from nexa_backtest.engines.clock import SimulatedClock
 from nexa_backtest.exceptions import AlgoError
-from nexa_backtest.types import MarketEvent
+from nexa_backtest.signals.registry import SignalRegistry
+from nexa_backtest.types import MarketEvent, SignalValue
 
 # ---------------------------------------------------------------------------
 # Tests: @algo decorator validation
@@ -371,3 +378,147 @@ def test_algo_receives_fill_events(idc_data_dir: Path) -> None:
     if result.fills:
         # If fills occurred, FillEvents must have been delivered to the algo.
         assert len(fill_events_received) == len(result.fills)
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by dispatcher unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_ctx() -> _BacktestContext:
+    """Return a minimal _BacktestContext for dispatcher unit tests."""
+    clock = SimulatedClock(initial_time=datetime(2026, 3, 1, 12, 0, tzinfo=UTC))
+    return _BacktestContext(clock=clock, signal_registry=SignalRegistry())
+
+
+def _make_passthrough_algo() -> object:
+    """Return an @algo decorated function that accepts all event types."""
+
+    @algo(name="passthrough", version="1.0.0")
+    async def run(ctx: TradingContext) -> None:
+        async for _ in ctx.events():
+            pass
+
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Tests: SimpleAlgoDispatcher.on_cancel
+# ---------------------------------------------------------------------------
+
+
+def test_simple_algo_dispatcher_on_cancel_forwards_to_algo() -> None:
+    """SimpleAlgoDispatcher.on_cancel must call algo.on_cancel."""
+    cancels: list[tuple[str, str]] = []
+
+    class TrackCancels(SimpleAlgo):
+        def on_cancel(self, ctx: TradingContext, order_id: str, reason: str) -> None:
+            cancels.append((order_id, reason))
+
+    dispatcher = SimpleAlgoDispatcher(TrackCancels())
+    ctx = _make_ctx()
+    dispatcher.on_cancel(ctx, "order-123", "gate closed")
+
+    assert cancels == [("order-123", "gate closed")]
+
+
+# ---------------------------------------------------------------------------
+# Tests: AsyncAlgoDispatcher — on_error, on_signal, on_cancel
+# ---------------------------------------------------------------------------
+
+
+def test_async_algo_dispatcher_on_error_reraises() -> None:
+    """AsyncAlgoDispatcher.on_error must re-raise the exception."""
+    dispatcher = AsyncAlgoDispatcher(_make_passthrough_algo())
+    ctx = _make_ctx()
+
+    with pytest.raises(ValueError, match="boom"):
+        dispatcher.on_error(ctx, ValueError("boom"))
+
+
+def test_async_algo_dispatcher_on_signal_pushes_event() -> None:
+    """AsyncAlgoDispatcher.on_signal must push a SignalUpdate to the event queue."""
+    received: list[object] = []
+
+    @algo(name="signal_watcher", version="1.0.0")
+    async def run(ctx: TradingContext) -> None:
+        async for event in ctx.events():
+            received.append(event)
+
+    dispatcher = AsyncAlgoDispatcher(run)
+    ctx = _make_ctx()
+    dispatcher.on_setup(ctx)
+
+    signal_value = SignalValue(
+        name="wind_forecast",
+        timestamp=datetime(2026, 3, 1, tzinfo=UTC),
+        value=42.0,
+    )
+    dispatcher.on_signal(ctx, "wind_forecast", signal_value)
+    dispatcher.on_teardown(ctx)
+
+    from nexa_backtest.types import SignalUpdate
+
+    assert any(isinstance(e, SignalUpdate) for e in received)
+
+
+def test_async_algo_dispatcher_on_cancel_pushes_event() -> None:
+    """AsyncAlgoDispatcher.on_cancel must push a CancelEvent to the event queue."""
+    received: list[object] = []
+
+    @algo(name="cancel_watcher", version="1.0.0")
+    async def run(ctx: TradingContext) -> None:
+        async for event in ctx.events():
+            received.append(event)
+
+    dispatcher = AsyncAlgoDispatcher(run)
+    ctx = _make_ctx()
+    dispatcher.on_setup(ctx)
+
+    dispatcher.on_cancel(ctx, "order-456", "expired")
+    dispatcher.on_teardown(ctx)
+
+    from nexa_backtest.types import CancelEvent
+
+    assert any(isinstance(e, CancelEvent) for e in received)
+
+
+# ---------------------------------------------------------------------------
+# Tests: AsyncAlgoDispatcher.on_auction_open via DA backtest
+# ---------------------------------------------------------------------------
+
+
+def _write_da_prices_for_decorator_test(path: Path) -> None:
+    data = {
+        "timestamp": pd.to_datetime(["2026-03-01T00:00:00Z", "2026-03-01T00:15:00Z"], utc=True),
+        "zone": ["NO1", "NO1"],
+        "price_eur_mwh": [45.0, 50.0],
+        "volume_mwh": [1000.0, 1000.0],
+    }
+    pd.DataFrame(data).to_parquet(path / "da_prices.parquet", index=False)
+
+
+def test_async_algo_receives_bar_events_from_da_auction(tmp_path: Path) -> None:
+    """@algo must receive BarEvents (from on_auction_open) during a DA backtest."""
+    _write_da_prices_for_decorator_test(tmp_path)
+
+    bar_events: list[BarEvent] = []
+
+    @algo(name="da_watcher", version="1.0.0")
+    async def run(ctx: TradingContext) -> None:
+        async for event in ctx.events():
+            if isinstance(event, BarEvent):
+                bar_events.append(event)
+
+    engine = BacktestEngine(
+        algo=run,
+        exchange="nordpool",
+        start=date(2026, 3, 1),
+        end=date(2026, 3, 1),
+        products=["NO1_DA"],
+        data_dir=tmp_path,
+        capital=Decimal("100000"),
+    )
+    engine.run()
+
+    assert len(bar_events) == 2

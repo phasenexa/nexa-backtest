@@ -772,7 +772,7 @@ class BacktestEngine:
             registry.register(provider)
 
         # Determine the zone (first product wins)
-        zone = _parse_zone(self._products[0])
+        zone = self._parse_zone()
 
         all_fills: list[Fill] = []
         equity_snapshots: list[EquitySnapshot] = []
@@ -902,7 +902,7 @@ class BacktestEngine:
                 ts = row["timestamp"]
                 if hasattr(ts, "to_pydatetime"):
                     context._product_delivery_starts[pid] = ts.to_pydatetime()
-                else:
+                else:  # pragma: no cover
                     context._product_delivery_starts[pid] = ts
 
             for signal_name in self._dispatcher.subscribed_signals:
