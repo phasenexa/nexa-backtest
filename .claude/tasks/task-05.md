@@ -47,6 +47,7 @@ def algo(
 ```
 
 The decorator should:
+
 - Record the algo's name and version as metadata
 - Validate that the decorated function is async
 - Validate that it accepts exactly one argument (the TradingContext)

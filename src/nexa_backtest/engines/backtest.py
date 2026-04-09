@@ -23,10 +23,12 @@ engines run in parallel sharing the same simulated clock.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -47,16 +49,23 @@ from nexa_backtest.data.loader import ParquetLoader
 from nexa_backtest.data.window import DataManifest, SlidingWindow
 from nexa_backtest.engines.clock import SimulatedClock
 from nexa_backtest.engines.matching import ContinuousMatchingEngine, DAAuctionMatcher
-from nexa_backtest.exceptions import DataError, SignalError
+from nexa_backtest.exceptions import AlgoError, DataError, SignalError
 from nexa_backtest.signals.base import SignalProvider
 from nexa_backtest.signals.csv_loader import CsvSignalProvider
 from nexa_backtest.signals.registry import SignalRegistry
 from nexa_backtest.types import (
     MTU,
     AuctionInfo,
+    BarEvent,
+    CancelEvent,
     CancelResult,
+    DeliveryPosition,
     EquitySnapshot,
     Fill,
+    FillEvent,
+    GateClosureEvent,
+    GateClosureSnapshot,
+    MarketEvent,
     Order,
     OrderBook,
     OrderResult,
@@ -64,6 +73,7 @@ from nexa_backtest.types import (
     Position,
     PriceLevel,
     Side,
+    SignalUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +88,172 @@ _IDC_GATE_CLOSURE_BEFORE_DELIVERY = timedelta(minutes=30)
 
 # Gate closure warning threshold
 _IDC_GATE_WARNING_BEFORE = timedelta(minutes=5)
+
+
+class _Stop:
+    """Sentinel object that signals the async algo event stream to stop."""
+
+
+_STOP = _Stop()
+
+
+# ---------------------------------------------------------------------------
+# AlgoDispatcher — abstraction over SimpleAlgo hooks vs async event stream
+# ---------------------------------------------------------------------------
+
+
+class SimpleAlgoDispatcher:
+    """Routes engine lifecycle calls to the hook-based :class:`SimpleAlgo` API.
+
+    The :class:`BacktestEngine` uses this internally so it never calls
+    ``SimpleAlgo`` methods directly.
+
+    Args:
+        algo: The :class:`SimpleAlgo` instance to dispatch to.
+    """
+
+    def __init__(self, algo: SimpleAlgo) -> None:
+        self._algo = algo
+
+    @property
+    def subscribed_signals(self) -> list[str]:
+        """Signal names the algo has subscribed to."""
+        return self._algo._subscribed_signals
+
+    def on_setup(self, ctx: TradingContext) -> None:
+        """Call ``algo.on_setup``."""
+        self._algo.on_setup(ctx)
+
+    def on_market_event(self, ctx: TradingContext, event: MarketEvent) -> None:
+        """No-op for SimpleAlgo — market events arrive via hooks, not the stream."""
+
+    def on_signal(self, ctx: TradingContext, name: str, value: SignalValue) -> None:
+        """Call ``algo.on_signal``."""
+        self._algo.on_signal(ctx, name, value)
+
+    def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:
+        """Call ``algo.on_auction_open``."""
+        self._algo.on_auction_open(ctx, auction)
+
+    def on_fill(self, ctx: TradingContext, fill: Fill) -> None:
+        """Call ``algo.on_fill``."""
+        self._algo.on_fill(ctx, fill)
+
+    def on_cancel(self, ctx: TradingContext, order_id: str, reason: str) -> None:
+        """Call ``algo.on_cancel``."""
+        self._algo.on_cancel(ctx, order_id, reason)
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        """Call ``algo.on_bar``."""
+        self._algo.on_bar(ctx)
+
+    def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
+        """Call ``algo.on_gate_closure``."""
+        self._algo.on_gate_closure(ctx, product_id)
+
+    def on_error(self, ctx: TradingContext, exc: Exception) -> None:
+        """Call ``algo.on_error``."""
+        self._algo.on_error(ctx, exc)
+
+    def on_teardown(self, ctx: TradingContext) -> None:
+        """Call ``algo.on_teardown``."""
+        self._algo.on_teardown(ctx)
+
+
+class AsyncAlgoDispatcher:
+    """Drives an ``@algo`` decorated async function via an asyncio event queue.
+
+    The backtest engine is synchronous; this dispatcher bridges that with the
+    async algo interface by managing a private asyncio event loop and an
+    :class:`asyncio.Queue`.  Events are pushed onto the queue; the algo is
+    stepped forward by running the loop until the algo suspends again.
+
+    Args:
+        algo_fn: The ``@algo`` decorated async function.
+    """
+
+    def __init__(self, algo_fn: Any) -> None:
+        self._algo_fn = algo_fn
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.Queue[Any] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def subscribed_signals(self) -> list[str]:
+        """``@algo`` functions do not use ``subscribe_signal``; returns empty."""
+        return []
+
+    def on_setup(self, ctx: _BacktestContext) -> None:
+        """Initialise the asyncio loop, create the queue, and start the algo.
+
+        The algo coroutine is launched as an asyncio :class:`~asyncio.Task`
+        and stepped forward until it suspends on ``ctx.events()``.
+        """
+        self._loop = asyncio.new_event_loop()
+
+        async def _make_queue() -> asyncio.Queue[Any]:
+            return asyncio.Queue()
+
+        self._queue = self._loop.run_until_complete(_make_queue())
+        ctx._event_queue = self._queue
+
+        self._task = self._loop.create_task(self._algo_fn(ctx))
+        # Step until the algo suspends waiting for the first event.
+        self._loop.run_until_complete(asyncio.sleep(0))
+
+    def _step(self) -> None:
+        """Run the event loop until the algo suspends again."""
+        assert self._loop is not None
+        self._loop.run_until_complete(asyncio.sleep(0))
+
+    def _push(self, event: MarketEvent | _Stop) -> None:
+        """Push an event (or stop sentinel) and step the loop."""
+        assert self._queue is not None
+        self._queue.put_nowait(event)
+        self._step()
+
+    def on_market_event(self, ctx: TradingContext, event: MarketEvent) -> None:
+        """Push a historical market event to the algo's event stream."""
+        self._push(event)
+
+    def on_signal(self, ctx: TradingContext, name: str, value: SignalValue) -> None:
+        """Push a :class:`~nexa_backtest.types.SignalUpdate` event."""
+        self._push(SignalUpdate(timestamp=ctx.now(), product_id="", name=name, value=value))
+
+    def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:
+        """Push a :class:`~nexa_backtest.types.BarEvent` at auction time."""
+        mtu = ctx.current_mtu()
+        self._push(BarEvent(timestamp=ctx.now(), product_id=auction.product_id, mtu=mtu))
+
+    def on_fill(self, ctx: TradingContext, fill: Fill) -> None:
+        """Push a :class:`~nexa_backtest.types.FillEvent`."""
+        self._push(FillEvent(timestamp=fill.timestamp, product_id=fill.product_id, fill=fill))
+
+    def on_cancel(self, ctx: TradingContext, order_id: str, reason: str) -> None:
+        """Push a :class:`~nexa_backtest.types.CancelEvent`."""
+        self._push(
+            CancelEvent(timestamp=ctx.now(), product_id="", order_id=order_id, reason=reason)
+        )
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        """Push a :class:`~nexa_backtest.types.BarEvent` at each MTU boundary."""
+        mtu = ctx.current_mtu()
+        self._push(BarEvent(timestamp=ctx.now(), product_id="", mtu=mtu))
+
+    def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
+        """Push a :class:`~nexa_backtest.types.GateClosureEvent`."""
+        self._push(GateClosureEvent(timestamp=ctx.now(), product_id=product_id))
+
+    def on_error(self, ctx: TradingContext, exc: Exception) -> None:
+        """Re-raise errors; the algo is expected to handle them in the stream."""
+        raise exc
+
+    def on_teardown(self, ctx: TradingContext) -> None:
+        """Send the stop sentinel and wait for the algo coroutine to finish."""
+        assert self._loop is not None and self._task is not None and self._queue is not None
+        self._queue.put_nowait(_STOP)
+        self._loop.run_until_complete(self._task)
+        self._loop.close()
 
 
 def _zero_position(product_id: str) -> Position:
@@ -144,6 +320,12 @@ class _BacktestContext:
 
         # IDC-mode state: orders placed during on_bar() await engine processing
         self._idc_pending_orders: dict[str, Order] = {}
+
+        # Delivery period mapping: product_id → delivery start datetime
+        self._product_delivery_starts: dict[str, datetime] = {}
+
+        # Async event queue for @algo functions (None in SimpleAlgo mode)
+        self._event_queue: asyncio.Queue[Any] | None = None
 
     # ------------------------------------------------------------------
     # Time
@@ -333,6 +515,81 @@ class _BacktestContext:
             Decimal("0"),
         )
 
+    def get_delivery_position(self, delivery_start: datetime) -> DeliveryPosition:
+        """Return the aggregated net position for a delivery period.
+
+        Sums positions across all products mapped to ``delivery_start``.
+
+        Args:
+            delivery_start: Timezone-aware start of the delivery period.
+
+        Returns:
+            :class:`~nexa_backtest.types.DeliveryPosition` with net MW and
+            contributing per-product positions.
+        """
+        contributing: list[Position] = []
+        for product_id, prod_ds in self._product_delivery_starts.items():
+            if prod_ds == delivery_start:
+                pos = self.get_position(product_id)
+                if pos.net_mw != 0:
+                    contributing.append(pos)
+
+        net_mw = sum((p.net_mw for p in contributing), Decimal("0"))
+        delivery_end = delivery_start + _MTU_DURATION
+        return DeliveryPosition(
+            delivery_start=delivery_start,
+            delivery_end=delivery_end,
+            net_mw=net_mw,
+            positions=tuple(contributing),
+        )
+
+    def get_all_delivery_positions(self) -> dict[datetime, DeliveryPosition]:
+        """Return all non-zero delivery positions keyed by delivery start.
+
+        Returns:
+            Dictionary mapping delivery start datetimes to aggregated positions.
+        """
+        all_starts = set(self._product_delivery_starts.values())
+        result: dict[datetime, DeliveryPosition] = {}
+        for ds in all_starts:
+            dp = self.get_delivery_position(ds)
+            if dp.net_mw != 0:
+                result[ds] = dp
+        return result
+
+    # ------------------------------------------------------------------
+    # Low-level @algo event stream
+    # ------------------------------------------------------------------
+
+    def events(self) -> AsyncIterator[MarketEvent]:
+        """Return an async iterator yielding market events in order.
+
+        Only valid when used via an ``@algo`` decorated function.
+
+        Returns:
+            Async iterator of :class:`~nexa_backtest.types.MarketEvent`
+            subclasses.
+
+        Raises:
+            :class:`~nexa_backtest.exceptions.AlgoError`: When called from a
+                ``SimpleAlgo`` context (``_event_queue`` is ``None``).
+        """
+        if self._event_queue is None:
+            raise AlgoError(
+                "ctx.events() is only available in the @algo API. "
+                "Use SimpleAlgo hooks (on_bar, on_fill, etc.) instead."
+            )
+        return self._event_stream()
+
+    async def _event_stream(self) -> AsyncGenerator[MarketEvent, None]:
+        """Internal async generator that yields from the event queue."""
+        assert self._event_queue is not None
+        while True:
+            event = await self._event_queue.get()
+            if isinstance(event, _Stop):
+                return
+            yield event
+
     # ------------------------------------------------------------------
     # Signals
     # ------------------------------------------------------------------
@@ -452,7 +709,7 @@ class BacktestEngine:
 
     def __init__(
         self,
-        algo: SimpleAlgo,
+        algo: SimpleAlgo | Any,
         exchange: str,
         start: date,
         end: date,
@@ -461,7 +718,6 @@ class BacktestEngine:
         capital: Decimal,
         signals: list[SignalProvider] | None = None,
     ) -> None:
-        self._algo = algo
         self._exchange = exchange
         self._start = start
         self._end = end
@@ -469,6 +725,20 @@ class BacktestEngine:
         self._data_dir = data_dir
         self._capital = capital
         self._signals: list[SignalProvider] = signals or []
+
+        # Resolve dispatcher based on whether this is a SimpleAlgo or @algo fn.
+        if isinstance(algo, SimpleAlgo):
+            self._dispatcher: SimpleAlgoDispatcher | AsyncAlgoDispatcher = SimpleAlgoDispatcher(
+                algo
+            )
+            self._algo_name = type(algo).__name__
+        elif callable(algo) and getattr(algo, "_is_algo", False):
+            self._dispatcher = AsyncAlgoDispatcher(algo)
+            self._algo_name = getattr(algo, "_algo_name", algo.__name__)
+        else:
+            raise AlgoError(
+                "algo must be a SimpleAlgo instance or a function decorated with @algo."
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -502,10 +772,11 @@ class BacktestEngine:
             registry.register(provider)
 
         # Determine the zone (first product wins)
-        zone = _parse_zone(self._products[0])
+        zone = self._parse_zone()
 
         all_fills: list[Fill] = []
         equity_snapshots: list[EquitySnapshot] = []
+        all_gate_closure_snapshots: list[GateClosureSnapshot] = []
         cumulative_pnl = Decimal("0")
 
         # --- DA run ---
@@ -520,9 +791,12 @@ class BacktestEngine:
 
         # --- IDC run ---
         if idc_products:
-            idc_fills, idc_snapshots, idc_pnl, idc_context, _ = self._run_idc(zone, registry)
+            idc_fills, idc_snapshots, idc_pnl, idc_context, _, gate_snaps = self._run_idc(
+                zone, registry
+            )
             all_fills.extend(idc_fills)
             equity_snapshots.extend(idc_snapshots)
+            all_gate_closure_snapshots.extend(gate_snaps)
             cumulative_pnl += idc_pnl
             if context is None:
                 context = idc_context
@@ -551,8 +825,15 @@ class BacktestEngine:
 
         duration = (self._end - self._start).days + 1
 
+        # Compute gate closure NOP metrics.
+        nop_values = [abs(s.net_mw) for s in all_gate_closure_snapshots if s.net_mw != 0]
+        avg_gate_nop = (
+            sum(nop_values, Decimal("0")) / Decimal(len(nop_values)) if nop_values else Decimal("0")
+        )
+        max_gate_nop = max(nop_values, default=Decimal("0"))
+
         return BacktestResult(
-            algo_name=type(self._algo).__name__,
+            algo_name=self._algo_name,
             exchange=self._exchange,
             start=self._start,
             end=self._end,
@@ -568,6 +849,9 @@ class BacktestEngine:
             best_trade=best_fill,
             worst_trade=worst_fill,
             duration_days=duration,
+            gate_closure_positions=tuple(all_gate_closure_snapshots),
+            avg_gate_closure_nop_mw=avg_gate_nop,
+            max_gate_closure_nop_mw=max_gate_nop,
         )
 
     # ------------------------------------------------------------------
@@ -594,7 +878,7 @@ class BacktestEngine:
         clock = SimulatedClock(initial_time=first_auction - timedelta(minutes=1))
         context = _BacktestContext(clock=clock, signal_registry=registry)
 
-        self._algo.on_setup(context)
+        self._dispatcher.on_setup(context)
         self._discover_signals(registry)
 
         market_vwap = compute_market_vwap(market_data)
@@ -614,12 +898,18 @@ class BacktestEngine:
                 pid: str = str(row["product_id"])
                 context._clearing_prices[pid] = Decimal(str(row["price_eur_mwh"]))
                 context._gate_closures[pid] = gate_closure
+                # Record delivery start for portfolio NOP aggregation.
+                ts = row["timestamp"]
+                if hasattr(ts, "to_pydatetime"):
+                    context._product_delivery_starts[pid] = ts.to_pydatetime()
+                else:  # pragma: no cover
+                    context._product_delivery_starts[pid] = ts
 
-            for signal_name in self._algo._subscribed_signals:
+            for signal_name in self._dispatcher.subscribed_signals:
                 if registry.has(signal_name):
                     try:
                         value = context.get_signal(signal_name)
-                        self._algo.on_signal(context, signal_name, value)
+                        self._dispatcher.on_signal(context, signal_name, value)
                     except SignalError:
                         logger.debug(
                             "No value yet for signal '%s' at %s — skipping.",
@@ -634,7 +924,7 @@ class BacktestEngine:
                     gate_closure_time=gate_closure,
                     zone=zone,
                 )
-                self._algo.on_auction_open(context, auction_info)
+                self._dispatcher.on_auction_open(context, auction_info)
 
             fill_time = gate_closure
             orders = list(context._pending_orders.values())
@@ -652,7 +942,7 @@ class BacktestEngine:
                     context._record_fill(match_result.fill)
                     all_fills.append(match_result.fill)
                     day_fills.append(match_result.fill)
-                    self._algo.on_fill(context, match_result.fill)
+                    self._dispatcher.on_fill(context, match_result.fill)
 
             if day_fills:
                 day_pnl = sum(
@@ -671,7 +961,7 @@ class BacktestEngine:
                     )
                 )
 
-        self._algo.on_teardown(context)
+        self._dispatcher.on_teardown(context)
         return all_fills, equity_snapshots, cumulative_pnl, context, clock, market_vwap
 
     # ------------------------------------------------------------------
@@ -688,6 +978,7 @@ class BacktestEngine:
         Decimal,
         _BacktestContext,
         SimulatedClock,
+        list[GateClosureSnapshot],
     ]:
         """Run the IDC continuous backtest loop."""
         # Build sliding window
@@ -705,15 +996,22 @@ class BacktestEngine:
             clock=clock, signal_registry=registry, idc_engine=matching_engine
         )
 
-        self._algo.on_setup(context)
+        self._dispatcher.on_setup(context)
         self._discover_signals(registry)
 
-        # Register gate closures for all products that will trade
+        # Register gate closures for all products that will trade and
+        # populate the delivery-start mapping for portfolio NOP aggregation.
         end_dt = datetime.combine(self._end + timedelta(days=1), time(0, 0), tzinfo=UTC)
         self._register_idc_gate_closures(matching_engine, start_dt, end_dt, zone)
+        _current = start_dt
+        while _current < end_dt:
+            pid = _mtu_to_product_id(_current, zone)
+            context._product_delivery_starts[pid] = _current
+            _current += _MTU_DURATION
 
         all_fills: list[Fill] = []
         equity_snapshots: list[EquitySnapshot] = []
+        gate_closure_snapshots: list[GateClosureSnapshot] = []
         cumulative_pnl = Decimal("0")
 
         current_time = start_dt
@@ -728,24 +1026,26 @@ class BacktestEngine:
                     fills = matching_engine.process_historical_event(event)
                 except Exception as exc:
                     with contextlib.suppress(Exception):
-                        self._algo.on_error(context, exc)
+                        self._dispatcher.on_error(context, exc)
                     continue
+                # Forward historical event to @algo stream.
+                self._dispatcher.on_market_event(context, event)
                 for fill in fills:
                     context._record_fill(fill)
                     all_fills.append(fill)
-                    self._algo.on_fill(context, fill)
+                    self._dispatcher.on_fill(context, fill)
 
             # Signal updates at each bar
-            for signal_name in self._algo._subscribed_signals:
+            for signal_name in self._dispatcher.subscribed_signals:
                 if registry.has(signal_name):
                     try:
                         value = context.get_signal(signal_name)
-                        self._algo.on_signal(context, signal_name, value)
+                        self._dispatcher.on_signal(context, signal_name, value)
                     except SignalError:
                         pass
 
             # on_bar: algo evaluates market and places orders
-            self._algo.on_bar(context)
+            self._dispatcher.on_bar(context)
 
             # Process orders placed during on_bar
             bar_fills: list[Fill] = []
@@ -757,14 +1057,24 @@ class BacktestEngine:
                     context._record_fill(fill)
                     all_fills.append(fill)
                     bar_fills.append(fill)
-                    self._algo.on_fill(context, fill)
+                    self._dispatcher.on_fill(context, fill)
 
             # Gate closure checks
             closed_products = matching_engine.check_gate_closures(current_time)
             for product_id in closed_products:
-                self._algo.on_gate_closure(context, product_id)
-                # on_cancel for any orders that were cancelled by gate closure
-                # (they were already removed from matching_engine in check_gate_closures)
+                # Record NOP snapshot before notifying the algo.
+                pos = context.get_position(product_id)
+                delivery_start = context._product_delivery_starts.get(product_id)
+                if delivery_start is not None:
+                    gate_closure_snapshots.append(
+                        GateClosureSnapshot(
+                            product_id=product_id,
+                            gate_closure_time=current_time,
+                            delivery_start=delivery_start,
+                            net_mw=pos.net_mw,
+                        )
+                    )
+                self._dispatcher.on_gate_closure(context, product_id)
 
             # Equity snapshot at each bar where fills occurred
             bar_all_fills = [f for f in all_fills if _in_mtu(f.timestamp, current_time, next_time)]
@@ -793,8 +1103,8 @@ class BacktestEngine:
 
             current_time = next_time
 
-        self._algo.on_teardown(context)
-        return all_fills, equity_snapshots, cumulative_pnl, context, clock
+        self._dispatcher.on_teardown(context)
+        return all_fills, equity_snapshots, cumulative_pnl, context, clock, gate_closure_snapshots
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -830,7 +1140,7 @@ class BacktestEngine:
     def _discover_signals(self, registry: SignalRegistry) -> None:
         """Auto-register CSV providers for subscribed but unregistered signals."""
         signals_dir = self._data_dir / "signals"
-        for signal_name in self._algo._subscribed_signals:
+        for signal_name in self._dispatcher.subscribed_signals:
             if registry.has(signal_name):
                 continue
             csv_path = signals_dir / f"{signal_name}.csv"

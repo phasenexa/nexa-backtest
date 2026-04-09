@@ -10,37 +10,26 @@ enabling mypy to verify compliance without inheritance.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict
-
 from nexa_backtest.types import (
     MTU,
     CancelResult,
+    DeliveryPosition,
+    MarketEvent,
     Order,
     OrderBook,
     OrderResult,
     Position,
     PriceLevel,
+    SignalValue,
 )
 
-
-class SignalValue(BaseModel):
-    """A single timestamped signal observation.
-
-    Attributes:
-        name: Signal identifier, e.g. ``"wind_generation_forecast"``.
-        timestamp: Timezone-aware time this value is valid for.
-        value: Numeric signal value. Units depend on the signal definition.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    timestamp: datetime
-    value: float
+# Re-export SignalValue so existing code that imports it from context still works.
+__all__ = ["SignalValue", "TradingContext"]
 
 
 class TradingContext(Protocol):
@@ -216,6 +205,33 @@ class TradingContext(Protocol):
         """
         ...
 
+    def get_delivery_position(self, delivery_start: datetime) -> DeliveryPosition:
+        """Return the aggregated net position for a specific delivery period.
+
+        Sums positions across all products whose delivery window matches
+        ``delivery_start``.  For IDC quarter-hourly products one product maps
+        to one 15-minute window; for multi-product scenarios (e.g. hourly and
+        QH products traded for the same delivery hour) this aggregation matters.
+
+        Args:
+            delivery_start: Timezone-aware start of the delivery period.
+
+        Returns:
+            :class:`~nexa_backtest.types.DeliveryPosition` with net MW and
+            the contributing per-product positions.
+        """
+        ...
+
+    def get_all_delivery_positions(self) -> dict[datetime, DeliveryPosition]:
+        """Return aggregated positions keyed by delivery period start.
+
+        Returns:
+            Dictionary mapping delivery start datetimes to
+            :class:`~nexa_backtest.types.DeliveryPosition` objects.  Only
+            includes periods where the net position is non-zero.
+        """
+        ...
+
     def get_unrealised_pnl(self) -> Decimal:
         """Return total unrealised PnL across all positions.
 
@@ -282,5 +298,37 @@ class TradingContext(Protocol):
             message: Human-readable message.
             level: Log level string: ``"debug"``, ``"info"``, ``"warning"``,
                 or ``"error"``. Defaults to ``"info"``.
+        """
+        ...
+
+    # ------------------------------------------------------------------
+    # Low-level @algo event stream
+    # ------------------------------------------------------------------
+
+    def events(self) -> AsyncIterator[MarketEvent]:
+        """Return an async iterator that yields market events in order.
+
+        Only available when the algo is decorated with :func:`~nexa_backtest.algo.algo`.
+        Calling this from a :class:`~nexa_backtest.algo.SimpleAlgo` raises
+        :class:`~nexa_backtest.exceptions.AlgoError`.
+
+        Usage::
+
+            @algo(name="spread_scalper", version="1.0.0")
+            async def run(ctx: TradingContext) -> None:
+                async for event in ctx.events():
+                    match event:
+                        case MarketDataUpdate():
+                            ...
+                        case BarEvent():
+                            ...
+
+        Returns:
+            Async iterator yielding :class:`~nexa_backtest.types.MarketEvent`
+            subclasses in timestamp order.
+
+        Raises:
+            :class:`~nexa_backtest.exceptions.AlgoError`: When called from a
+                ``SimpleAlgo`` hook context.
         """
         ...

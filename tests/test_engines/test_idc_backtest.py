@@ -867,3 +867,34 @@ class TestIDCSignalLoop:
 
         assert len(signal_calls) > 0
         assert all(name == "wind_forecast" for name, _ in signal_calls)
+
+    def test_signal_error_silently_skipped_in_idc_mode(self, tmp_path: Path) -> None:
+        """When get_signal raises SignalError, the IDC bar loop must continue silently."""
+        # Write a signal CSV whose timestamps are all in the future relative to the
+        # replay period (2026-03-01).  Every get_signal call during replay will raise
+        # SignalError (no value yet), which the engine must swallow and continue.
+        signals_dir = tmp_path / "signals"
+        signals_dir.mkdir()
+        signal_csv = signals_dir / "future_signal.csv"
+        signal_csv.write_text("timestamp,value\n2026-06-01T00:00:00+00:00,99.0\n")
+
+        class _FutureSignalAlgo(SimpleAlgo):
+            def on_setup(self, ctx: TradingContext) -> None:
+                self.subscribe_signal("future_signal")
+
+            def on_bar(self, ctx: TradingContext) -> None:
+                pass
+
+        _write_idc_parquet(tmp_path, "NO1", [])
+        engine = BacktestEngine(
+            algo=_FutureSignalAlgo(),
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            capital=Decimal("100000"),
+        )
+        # Engine must not raise even though every signal lookup fails.
+        result = engine.run()
+        assert result is not None

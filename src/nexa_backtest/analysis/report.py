@@ -255,6 +255,28 @@ def _top_trades_rows(
 # ---------------------------------------------------------------------------
 
 
+def _gate_closure_nop_traces(result: BacktestResult) -> str:
+    """Return Plotly trace for NOP at gate closure over time."""
+    snaps = result.gate_closure_positions
+    if not snaps:
+        return "[]"
+
+    xs = [s.gate_closure_time.isoformat() for s in snaps]
+    ys = [float(s.net_mw) for s in snaps]
+    colours = [_MINT if y >= 0 else _CORAL for y in ys]
+
+    traces = [
+        {
+            "type": "bar",
+            "x": xs,
+            "y": ys,
+            "name": "NOP at Gate Closure",
+            "marker": {"color": colours},
+        }
+    ]
+    return _json(traces)
+
+
 def generate_html_report(result: BacktestResult) -> str:
     """Generate a self-contained HTML backtest report.
 
@@ -273,6 +295,7 @@ def generate_html_report(result: BacktestResult) -> str:
     daily_traces = _daily_pnl_traces(result)
     vwap_traces = _vwap_edge_traces(result)
     hourly_traces = _hourly_distribution_traces(result)
+    gate_nop_traces = _gate_closure_nop_traces(result)
 
     metric_rows_html = "".join(
         f"<tr><td>{label}</td><td>{value}</td></tr>" for label, value in _metric_rows(result)
@@ -531,6 +554,24 @@ def generate_html_report(result: BacktestResult) -> str:
     </div>
   </div>
 
+  <!-- Gate Closure Exposure -->
+  <p class="section-title">Gate Closure Exposure</p>
+  <div class="grid-2">
+    <div class="card">
+      <h3>NOP at Gate Closure (MW)</h3>
+      <div id="chart-gate-nop" class="chart-container"></div>
+    </div>
+    <div class="card">
+      <table class="metrics-table">
+        <tbody>
+          <tr><td>Products Closed</td><td>{len(result.gate_closure_positions)}</td></tr>
+          <tr><td>Avg NOP at Closure</td><td>{float(result.avg_gate_closure_nop_mw):.2f} MW</td></tr>
+          <tr><td>Max NOP at Closure</td><td>{float(result.max_gate_closure_nop_mw):.2f} MW</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Daily breakdown -->
   <p class="section-title">Daily Breakdown</p>
   <div class="card">
@@ -566,6 +607,7 @@ def generate_html_report(result: BacktestResult) -> str:
   Plotly.newPlot('chart-daily', {daily_traces}, Object.assign({{}}, layout, {{title: false}}), config);
   Plotly.newPlot('chart-vwap', {vwap_traces}, Object.assign({{}}, layout, {{title: false}}), config);
   Plotly.newPlot('chart-hourly', {hourly_traces}, Object.assign({{}}, layout, {{title: false}}), config);
+  Plotly.newPlot('chart-gate-nop', {gate_nop_traces}, Object.assign({{}}, layout, {{title: false}}), config);
 }})();
 </script>
 </body>

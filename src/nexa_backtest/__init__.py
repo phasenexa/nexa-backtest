@@ -1,7 +1,7 @@
 """nexa-backtest: Backtesting framework for European power markets."""
 
 from nexa_backtest._version import __version__
-from nexa_backtest.algo import SimpleAlgo
+from nexa_backtest.algo import SimpleAlgo, algo
 from nexa_backtest.analysis.metrics import BacktestResult, DailyPnL
 from nexa_backtest.context import SignalValue, TradingContext
 from nexa_backtest.engines.backtest import BacktestEngine
@@ -15,15 +15,27 @@ from nexa_backtest.exceptions import (
     UnsupportedFeatureError,
     ValidationError,
 )
+from nexa_backtest.exchanges.epex_spot import EpexSpotAdapter
+from nexa_backtest.exchanges.nordpool import NordPoolAdapter
 from nexa_backtest.signals.base import SignalProvider, SignalSchema
 from nexa_backtest.signals.csv_loader import CsvSignalProvider
 from nexa_backtest.signals.registry import SignalRegistry
 from nexa_backtest.types import (
     MTU,
     AuctionInfo,
+    BarEvent,
+    CancelEvent,
     CancelResult,
+    DeliveryPosition,
     EquitySnapshot,
     Fill,
+    FillEvent,
+    GateClosureEvent,
+    GateClosureSnapshot,
+    GateClosureWarning,
+    HistoricalTrade,
+    MarketDataUpdate,
+    MarketEvent,
     Order,
     OrderBook,
     OrderResult,
@@ -31,6 +43,7 @@ from nexa_backtest.types import (
     Position,
     PriceLevel,
     Side,
+    SignalUpdate,
 )
 
 __all__ = [
@@ -39,15 +52,27 @@ __all__ = [
     "AuctionInfo",
     "BacktestEngine",
     "BacktestResult",
+    "BarEvent",
+    "CancelEvent",
     "CancelResult",
     "CsvSignalProvider",
     "DailyPnL",
     "DataError",
+    "DeliveryPosition",
+    "EpexSpotAdapter",
     "EquitySnapshot",
     "ExchangeError",
     "Fill",
+    "FillEvent",
+    "GateClosureEvent",
+    "GateClosureSnapshot",
+    "GateClosureWarning",
+    "HistoricalTrade",
+    "MarketDataUpdate",
+    "MarketEvent",
     "MatchingError",
     "NexaBacktestError",
+    "NordPoolAdapter",
     "Order",
     "OrderBook",
     "OrderResult",
@@ -59,10 +84,12 @@ __all__ = [
     "SignalProvider",
     "SignalRegistry",
     "SignalSchema",
+    "SignalUpdate",
     "SignalValue",
     "SimpleAlgo",
     "TradingContext",
     "UnsupportedFeatureError",
     "ValidationError",
     "__version__",
+    "algo",
 ]

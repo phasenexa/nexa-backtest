@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from nexa_backtest.analysis.pnl import PnlSummary
-from nexa_backtest.types import EquitySnapshot, Fill, Side
+from nexa_backtest.types import EquitySnapshot, Fill, GateClosureSnapshot, Side
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -228,6 +228,11 @@ class BacktestResult:
     worst_trade: Fill | None = None
     duration_days: int = 0
 
+    # --- new in spec-05: gate closure NOP tracking ---
+    gate_closure_positions: tuple[GateClosureSnapshot, ...] = field(default_factory=tuple)
+    avg_gate_closure_nop_mw: Decimal = Decimal("0")
+    max_gate_closure_nop_mw: Decimal = Decimal("0")
+
     # ------------------------------------------------------------------
     # Text summary
     # ------------------------------------------------------------------
@@ -297,6 +302,15 @@ class BacktestResult:
                 f"  Worst Trade:     {float(wt_pnl):>+14,.2f} EUR  "
                 f"({self.worst_trade.product_id} {ts})"
             )
+
+        if self.gate_closure_positions:
+            lines += [
+                "",
+                "  Gate Closure NOP:",
+                f"    Products closed:  {len(self.gate_closure_positions):>6d}",
+                f"    Avg NOP at close: {float(self.avg_gate_closure_nop_mw):>10.2f} MW",
+                f"    Max NOP at close: {float(self.max_gate_closure_nop_mw):>10.2f} MW",
+            ]
 
         lines += [
             "",
