@@ -23,17 +23,22 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import click
 
 from nexa_backtest.algo import SimpleAlgo
+from nexa_backtest.cli.validate import validate_command
 from nexa_backtest.engines.backtest import BacktestEngine
-from nexa_backtest.exceptions import NexaBacktestError
+from nexa_backtest.exceptions import AlgoError, NexaBacktestError
 
 
 @click.group()
 def cli() -> None:
     """nexa-backtest: backtesting framework for European power markets."""
+
+
+cli.add_command(validate_command)
 
 
 @cli.command("run")
@@ -78,6 +83,19 @@ def cli() -> None:
         "(Parquet export). Summary is always printed to stdout."
     ),
 )
+@click.option(
+    "--validate",
+    "run_validation",
+    is_flag=True,
+    default=False,
+    help="Run the validation pipeline before starting the backtest.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="With --validate: treat warnings as errors.",
+)
 def run_command(
     algo_file: str,
     exchange: str,
@@ -87,6 +105,8 @@ def run_command(
     data_dir: str,
     capital: float,
     output: str | None,
+    run_validation: bool,
+    strict: bool,
 ) -> None:
     """Run a backtest from ALGO_FILE and print the PnL summary.
 
@@ -97,13 +117,27 @@ def run_command(
     from the file extension: ``.html`` for an HTML report, ``.json`` for JSON,
     or a path without a recognised extension is treated as a directory for
     Parquet output.
+
+    Use --validate to run the six-step validation pipeline before the backtest
+    starts. The backtest will not run if validation fails.
     """
+    if run_validation:
+        from nexa_backtest.validation.runner import ValidationRunner
+
+        click.echo(f"\nValidating {algo_file} against {exchange}...\n")
+        runner = ValidationRunner(algo_path=algo_file, exchange=exchange, strict=strict)
+        val_result = runner.run()
+        click.echo(val_result.summary())
+        if not val_result.passed:
+            raise click.ClickException("Validation failed. Fix the issues above before running.")
+        click.echo("")
+
     try:
-        algo_class = _load_algo_class(algo_file)
-    except NexaBacktestError as exc:
+        algo_or_class = _load_algo(algo_file)
+    except (NexaBacktestError, AlgoError) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    algo = algo_class()
+    algo = algo_or_class() if isinstance(algo_or_class, type) else algo_or_class
 
     engine = BacktestEngine(
         algo=algo,
@@ -163,42 +197,65 @@ def _load_module(path: str) -> ModuleType:
     return module
 
 
-def _load_algo_class(path: str) -> type[SimpleAlgo]:
-    """Find the unique :class:`~nexa_backtest.algo.SimpleAlgo` subclass in ``path``.
+def _load_algo(path: str) -> type[SimpleAlgo] | Any:
+    """Find a runnable algo in ``path``.
+
+    Accepts either a unique :class:`~nexa_backtest.algo.SimpleAlgo` subclass
+    or a unique ``@algo``-decorated async function.  ``@algo`` functions take
+    priority when both are present; an error is raised if multiple candidates
+    of either kind are found.
 
     Args:
         path: Path to a Python file.
 
     Returns:
-        The single :class:`~nexa_backtest.algo.SimpleAlgo` subclass found.
+        A :class:`~nexa_backtest.algo.SimpleAlgo` subclass (to be instantiated
+        by the caller) or an ``@algo``-decorated callable (ready to pass
+        directly to :class:`~nexa_backtest.engines.backtest.BacktestEngine`).
 
     Raises:
-        :class:`click.ClickException`: If zero or multiple subclasses are found.
+        :class:`click.ClickException`: If no valid algo is found, or if
+            multiple candidates are found.
     """
     module = _load_module(path)
 
+    algo_fns = [
+        obj
+        for _, obj in inspect.getmembers(module, inspect.isfunction)
+        if getattr(obj, "_is_algo", False)
+    ]
     subclasses: list[type[SimpleAlgo]] = [
         obj
         for _, obj in inspect.getmembers(module, inspect.isclass)
         if issubclass(obj, SimpleAlgo) and obj is not SimpleAlgo
     ]
 
-    if len(subclasses) == 0:
-        raise click.ClickException(
-            f"No SimpleAlgo subclass found in '{path}'. Define a class that extends SimpleAlgo."
-        )
-    if len(subclasses) > 1:
-        names = ", ".join(c.__name__ for c in subclasses)
-        raise click.ClickException(
-            f"Multiple SimpleAlgo subclasses found in '{path}': {names}. "
-            "Move the unused classes to a separate file."
-        )
+    if algo_fns:
+        if len(algo_fns) > 1:
+            names = ", ".join(f.__name__ for f in algo_fns)
+            raise click.ClickException(
+                f"Multiple @algo functions found in '{path}': {names}. "
+                "Move the unused functions to a separate file."
+            )
+        return algo_fns[0]
 
-    return subclasses[0]
+    if subclasses:
+        if len(subclasses) > 1:
+            names = ", ".join(c.__name__ for c in subclasses)
+            raise click.ClickException(
+                f"Multiple SimpleAlgo subclasses found in '{path}': {names}. "
+                "Move the unused classes to a separate file."
+            )
+        return subclasses[0]
+
+    raise click.ClickException(
+        f"No algo found in '{path}'. "
+        "Either decorate an async function with @algo or define a class that extends SimpleAlgo."
+    )
 
 
 def find_algo_class(path: str) -> type[SimpleAlgo]:
-    """Public wrapper around :func:`_load_algo_class` for use in tests.
+    """Public wrapper for use in tests (SimpleAlgo only).
 
     Args:
         path: Path to a Python file containing a SimpleAlgo subclass.
@@ -206,4 +263,9 @@ def find_algo_class(path: str) -> type[SimpleAlgo]:
     Returns:
         The discovered :class:`~nexa_backtest.algo.SimpleAlgo` subclass.
     """
-    return _load_algo_class(path)
+    result = _load_algo(path)
+    if not (isinstance(result, type) and issubclass(result, SimpleAlgo)):
+        raise click.ClickException(
+            f"Expected a SimpleAlgo subclass in '{path}', got an @algo function."
+        )
+    return result

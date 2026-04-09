@@ -56,7 +56,7 @@ class TestFindAlgoClass:
         algo_file = _write_algo(tmp_path / "algo.py", code)
         import click
 
-        with pytest.raises(click.ClickException, match="No SimpleAlgo"):
+        with pytest.raises(click.ClickException, match="No algo found"):
             find_algo_class(str(algo_file))
 
     def test_invalid_spec_raises_click_exception(self, tmp_path: Path) -> None:
