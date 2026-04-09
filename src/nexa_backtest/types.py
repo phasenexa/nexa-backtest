@@ -8,12 +8,28 @@ All datetimes are timezone-aware.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+
+class SignalValue(BaseModel):
+    """A single timestamped signal observation.
+
+    Attributes:
+        name: Signal identifier, e.g. ``"wind_generation_forecast"``.
+        timestamp: Timezone-aware time this value is valid for.
+        value: Numeric signal value. Units depend on the signal definition.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    timestamp: datetime
+    value: float
 
 
 class Side(StrEnum):
@@ -415,6 +431,111 @@ class GateClosureWarning(MarketEvent):
 @dataclass(frozen=True)
 class GateClosureEvent(MarketEvent):
     """Gate has closed for a product; no further orders may be submitted."""
+
+
+@dataclass(frozen=True)
+class SignalUpdate(MarketEvent):
+    """A subscribed signal has a new value.
+
+    Delivered to ``@algo`` functions via :meth:`TradingContext.events`.
+
+    Attributes:
+        name: Signal name matching the subscription.
+        value: The latest signal value visible at the current simulated time.
+    """
+
+    name: str
+    value: SignalValue
+
+
+@dataclass(frozen=True)
+class BarEvent(MarketEvent):
+    """MTU boundary tick delivered to ``@algo`` functions.
+
+    Equivalent to :meth:`~nexa_backtest.algo.SimpleAlgo.on_bar` in the
+    hook-based API.
+
+    Attributes:
+        mtu: The MTU that just started.
+    """
+
+    mtu: MTU
+
+
+@dataclass(frozen=True)
+class FillEvent(MarketEvent):
+    """One of the algo's orders was filled.
+
+    Delivered to ``@algo`` functions via :meth:`TradingContext.events`.
+    Equivalent to :meth:`~nexa_backtest.algo.SimpleAlgo.on_fill`.
+
+    Attributes:
+        fill: Details of the fill, including price, volume, and side.
+    """
+
+    fill: Fill
+
+
+@dataclass(frozen=True)
+class CancelEvent(MarketEvent):
+    """One of the algo's orders was cancelled.
+
+    Delivered to ``@algo`` functions via :meth:`TradingContext.events`.
+    Equivalent to :meth:`~nexa_backtest.algo.SimpleAlgo.on_cancel`.
+
+    Attributes:
+        order_id: ID of the cancelled order.
+        reason: One of ``"gate_closure"``, ``"user_cancel"``,
+            ``"exchange_cancel"``.
+    """
+
+    order_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class DeliveryPosition:
+    """Net open position for a specific delivery period, aggregated across
+    all products covering that period.
+
+    For most IDC backtests one product maps to one delivery period, so
+    ``net_mw`` equals the single ``Position.net_mw``.  This type becomes
+    meaningful when multiple products (e.g. hourly + quarter-hourly) map to
+    the same 15-minute window.
+
+    Attributes:
+        delivery_start: Timezone-aware start of the delivery period.
+        delivery_end: Timezone-aware end of the delivery period.
+        net_mw: Net volume in MW (positive = long, negative = short),
+            summed across all contributing positions.
+        positions: Per-product positions that contribute to this window.
+    """
+
+    delivery_start: datetime
+    delivery_end: datetime
+    net_mw: Decimal
+    positions: tuple[Position, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class GateClosureSnapshot:
+    """Snapshot of the algo's net position when gate closed for a product.
+
+    Recorded by the engine each time a product's gate closes.  A non-zero
+    ``net_mw`` indicates the algo is carrying open IDC exposure into
+    physical delivery.
+
+    Attributes:
+        product_id: Exchange product identifier.
+        gate_closure_time: Timezone-aware time gate closed.
+        delivery_start: Timezone-aware start of the delivery period.
+        net_mw: Net position in MW at gate closure.
+    """
+
+    product_id: str
+    gate_closure_time: datetime
+    delivery_start: datetime
+    net_mw: Decimal
 
 
 @dataclass(frozen=True)

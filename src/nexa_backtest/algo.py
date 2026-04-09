@@ -1,14 +1,88 @@
-"""SimpleAlgo base class for the hook-based trading algorithm interface.
+"""SimpleAlgo base class and the ``@algo`` decorator for trading algorithms.
 
-Subclass :class:`SimpleAlgo` and override the hooks you need. All hooks are
-no-ops by default. The algo must never import engine-specific classes; all
-market interaction goes through :class:`~nexa_backtest.context.TradingContext`.
+Two APIs are provided:
+
+- **SimpleAlgo**: subclass and override lifecycle hooks.  Best for simple
+  strategies and beginners.
+- **@algo decorator**: marks an async function as a trading algo that
+  consumes the full event stream via ``ctx.events()``.  Best for complex
+  strategies that need fine-grained control over the event loop.
+
+Both APIs use the same :class:`~nexa_backtest.context.TradingContext`
+protocol and are engine-agnostic.
 """
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable, Coroutine
+from typing import Any
+
 from nexa_backtest.context import SignalValue, TradingContext
+from nexa_backtest.exceptions import AlgoError
 from nexa_backtest.types import AuctionInfo, Fill
+
+
+def algo(
+    name: str,
+    version: str,
+) -> Callable[[Callable[..., Coroutine[Any, Any, None]]], Callable[..., Coroutine[Any, Any, None]]]:
+    """Decorator that marks an async function as a trading algo.
+
+    The decorated function receives a :class:`~nexa_backtest.context.TradingContext`
+    and must consume events via ``ctx.events()``.  The engine drives the algo
+    by pushing market events onto an internal async queue; the algo processes
+    them one at a time.
+
+    Args:
+        name: Human-readable algo name, recorded in the
+            :class:`~nexa_backtest.analysis.metrics.BacktestResult`.
+        version: Semantic version string, e.g. ``"1.0.0"``.
+
+    Returns:
+        A decorator that validates and annotates the decorated function.
+
+    Raises:
+        :class:`~nexa_backtest.exceptions.AlgoError`: If the decorated
+            function is not ``async``, or does not accept exactly one argument
+            (the ``TradingContext``).
+
+    Example::
+
+        @algo(name="spread_scalper", version="1.0.0")
+        async def run(ctx: TradingContext) -> None:
+            async for event in ctx.events():
+                match event:
+                    case MarketDataUpdate():
+                        ...
+                    case BarEvent():
+                        ctx.place_order(Order.buy(...))
+    """
+
+    def decorator(
+        fn: Callable[..., Coroutine[Any, Any, None]],
+    ) -> Callable[..., Coroutine[Any, Any, None]]:
+        if not inspect.iscoroutinefunction(fn):
+            raise AlgoError(
+                f"@algo decorated function must be async. "
+                f"Got: {fn.__name__!r} (not a coroutine function)."
+            )
+
+        sig = inspect.signature(fn)
+        if len(sig.parameters) != 1:
+            raise AlgoError(
+                f"@algo decorated function must accept exactly one argument "
+                f"(the TradingContext). "
+                f"Got: {fn.__name__!r} with {len(sig.parameters)} parameters."
+            )
+
+        # Attach metadata so the engine can identify @algo functions.
+        fn._is_algo = True  # type: ignore[attr-defined]
+        fn._algo_name = name  # type: ignore[attr-defined]
+        fn._algo_version = version  # type: ignore[attr-defined]
+        return fn
+
+    return decorator
 
 
 class SimpleAlgo:
