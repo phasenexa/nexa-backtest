@@ -21,7 +21,7 @@ Run via::
         --start 2026-03-01 \\
         --end 2026-03-31 \\
         --products NO1-QH \\
-        --data-dir tests/fixtures \\
+        --data-dir tests/fixtures/nordpool \\
         --capital 100000
 """
 
