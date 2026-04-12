@@ -59,26 +59,35 @@ class DailyPnL:
 # ---------------------------------------------------------------------------
 
 
-def compute_fill_pnl(fill: Fill, market_vwap: Decimal) -> Decimal:
+def compute_fill_pnl(
+    fill: Fill,
+    market_vwap: Decimal,
+    product_vwaps: dict[str, Decimal] | None = None,
+) -> Decimal:
     """Compute the VWAP-relative PnL for a single fill.
 
-    For buys: ``(market_vwap - fill.price) * fill.volume`` — positive when
-    the algo bought below VWAP.
+    For buys: ``(benchmark - fill.price) * fill.volume`` — positive when
+    the algo bought below the benchmark price.
 
-    For sells: ``(fill.price - market_vwap) * fill.volume`` — positive when
-    the algo sold above VWAP.
+    For sells: ``(fill.price - benchmark) * fill.volume`` — positive when
+    the algo sold above the benchmark price.
 
     Args:
         fill: The fill to evaluate.
-        market_vwap: Volume-weighted average clearing price across all products
-            in the backtest period (the benchmark).
+        market_vwap: Portfolio-level VWAP used as fallback when
+            ``product_vwaps`` is not provided or does not contain the fill's
+            product.
+        product_vwaps: Optional per-product VWAPs ``{product_id: vwap}``.
+            When provided, each fill is benchmarked against its own product's
+            market VWAP for accurate attribution.
 
     Returns:
         PnL in EUR, positive meaning the fill benefited the algo vs VWAP.
     """
+    benchmark = product_vwaps.get(fill.product_id, market_vwap) if product_vwaps else market_vwap
     if fill.side == Side.BUY:
-        return (market_vwap - fill.price) * fill.volume
-    return (fill.price - market_vwap) * fill.volume
+        return (benchmark - fill.price) * fill.volume
+    return (fill.price - benchmark) * fill.volume
 
 
 # ---------------------------------------------------------------------------
@@ -158,18 +167,25 @@ def compute_max_drawdown(
     return max_dd, max_dd_pct
 
 
-def compute_profit_factor(fills: list[Fill], market_vwap: Decimal) -> Decimal | None:
+def compute_profit_factor(
+    fills: list[Fill],
+    market_vwap: Decimal,
+    product_vwaps: dict[str, Decimal] | None = None,
+) -> Decimal | None:
     """Compute profit factor: sum of gains / sum of losses.
 
     Args:
         fills: All fills from the backtest.
-        market_vwap: Market VWAP used as the PnL benchmark.
+        market_vwap: Portfolio-level VWAP used as fallback benchmark.
+        product_vwaps: Optional per-product VWAPs. When provided, each fill
+            is benchmarked against its own product's VWAP — consistent with
+            how ``total_alpha_eur`` is computed in :func:`~nexa_backtest.analysis.pnl.compute_pnl`.
 
     Returns:
         Profit factor as a Decimal, or ``None`` if there are no losing fills
         (undefined / infinite profit factor).
     """
-    fill_pnls = [compute_fill_pnl(f, market_vwap) for f in fills]
+    fill_pnls = [compute_fill_pnl(f, market_vwap, product_vwaps) for f in fills]
     gains = sum((p for p in fill_pnls if p > 0), Decimal("0"))
     losses = sum((abs(p) for p in fill_pnls if p < 0), Decimal("0"))
     if losses == 0:
@@ -206,6 +222,10 @@ class BacktestResult:
         best_trade: Fill with the highest individual PnL, or ``None``.
         worst_trade: Fill with the lowest individual PnL, or ``None``.
         duration_days: Number of calendar days covered (end - start + 1).
+        product_vwaps: Per-product market VWAPs used as the consistent
+            benchmark across all metrics (profit factor, daily PnL,
+            best/worst trade). Empty dict for DA-only runs, where the
+            portfolio ``pnl.market_vwap`` is used instead.
     """
 
     # --- existing fields ---
@@ -232,6 +252,9 @@ class BacktestResult:
     gate_closure_positions: tuple[GateClosureSnapshot, ...] = field(default_factory=tuple)
     avg_gate_closure_nop_mw: Decimal = Decimal("0")
     max_gate_closure_nop_mw: Decimal = Decimal("0")
+
+    # --- per-product VWAPs for consistent benchmark across all metrics ---
+    product_vwaps: dict[str, Decimal] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Text summary
@@ -288,7 +311,7 @@ class BacktestResult:
         ]
 
         if self.best_trade is not None:
-            bt_pnl = compute_fill_pnl(self.best_trade, p.market_vwap)
+            bt_pnl = compute_fill_pnl(self.best_trade, p.market_vwap, self.product_vwaps)
             ts = self.best_trade.timestamp.strftime("%Y-%m-%d %H:%M")
             lines.append(
                 f"  Best Trade:      {float(bt_pnl):>+14,.2f} EUR  "
@@ -296,7 +319,7 @@ class BacktestResult:
             )
 
         if self.worst_trade is not None:
-            wt_pnl = compute_fill_pnl(self.worst_trade, p.market_vwap)
+            wt_pnl = compute_fill_pnl(self.worst_trade, p.market_vwap, self.product_vwaps)
             ts = self.worst_trade.timestamp.strftime("%Y-%m-%d %H:%M")
             lines.append(
                 f"  Worst Trade:     {float(wt_pnl):>+14,.2f} EUR  "
@@ -380,7 +403,10 @@ class BacktestResult:
 
         result: list[DailyPnL] = []
         for day, day_fills in sorted(daily_fills.items()):
-            pnl_eur = sum((compute_fill_pnl(f, market_vwap) for f in day_fills), Decimal("0"))
+            pnl_eur = sum(
+                (compute_fill_pnl(f, market_vwap, self.product_vwaps) for f in day_fills),
+                Decimal("0"),
+            )
             volume = sum((f.volume for f in day_fills), Decimal("0"))
             vwap_edge = pnl_eur / volume if volume > 0 else Decimal("0")
             result.append(
