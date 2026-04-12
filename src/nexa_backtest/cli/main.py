@@ -31,6 +31,7 @@ from nexa_backtest.algo import SimpleAlgo
 from nexa_backtest.cli.validate import validate_command
 from nexa_backtest.engines.backtest import BacktestEngine
 from nexa_backtest.exceptions import AlgoError, NexaBacktestError
+from nexa_backtest.models.registry import ModelRegistry
 
 
 @click.group()
@@ -96,6 +97,15 @@ cli.add_command(validate_command)
     default=False,
     help="With --validate: treat warnings as errors.",
 )
+@click.option(
+    "--model",
+    "model_specs",
+    multiple=True,
+    help=(
+        "Register an ML model as 'name:path'. The loader is inferred from the extension "
+        "(.onnx → ONNX, .pkl/.joblib → scikit-learn). Repeat for multiple models."
+    ),
+)
 def run_command(
     algo_file: str,
     exchange: str,
@@ -107,6 +117,7 @@ def run_command(
     output: str | None,
     run_validation: bool,
     strict: bool,
+    model_specs: tuple[str, ...],
 ) -> None:
     """Run a backtest from ALGO_FILE and print the PnL summary.
 
@@ -120,12 +131,19 @@ def run_command(
 
     Use --validate to run the six-step validation pipeline before the backtest
     starts. The backtest will not run if validation fails.
+
+    Use --model name:path to register ML models. The loader is inferred from
+    the file extension (.onnx → ONNX, .pkl/.joblib → scikit-learn).
     """
+    model_registry = _build_model_registry(model_specs) if model_specs else None
+
     if run_validation:
         from nexa_backtest.validation.runner import ValidationRunner
 
         click.echo(f"\nValidating {algo_file} against {exchange}...\n")
-        runner = ValidationRunner(algo_path=algo_file, exchange=exchange, strict=strict)
+        runner = ValidationRunner(
+            algo_path=algo_file, exchange=exchange, strict=strict, models=model_registry
+        )
         val_result = runner.run()
         click.echo(val_result.summary())
         if not val_result.passed:
@@ -147,6 +165,7 @@ def run_command(
         products=list(products),
         data_dir=Path(data_dir),
         capital=Decimal(str(capital)),
+        models=model_registry,
     )
 
     try:
@@ -269,3 +288,93 @@ def find_algo_class(path: str) -> type[SimpleAlgo]:
             f"Expected a SimpleAlgo subclass in '{path}', got an @algo function."
         )
     return result
+
+
+def _build_model_registry(specs: tuple[str, ...]) -> ModelRegistry:
+    """Parse ``name:path`` model specs and build a :class:`ModelRegistry`.
+
+    The loader type is inferred from the file extension:
+
+    - ``.onnx`` → :class:`~nexa_backtest.models.onnx.ONNXModel`
+    - ``.pkl``, ``.joblib`` → :class:`~nexa_backtest.models.sklearn.SklearnModel`
+
+    For scikit-learn models, a JSON sidecar file at ``<path>.json`` (or
+    ``<stem>.json`` beside the model) is read for ``input_schema``,
+    ``output_schema``, and ``feature_order`` if present.
+
+    Args:
+        specs: Tuple of ``"name:path"`` strings.
+
+    Returns:
+        Populated :class:`~nexa_backtest.models.registry.ModelRegistry`.
+
+    Raises:
+        :class:`click.ClickException`: On parse errors or unsupported formats.
+    """
+    import json as _json
+
+    from nexa_backtest.models.onnx import ONNXModel
+    from nexa_backtest.models.registry import ModelRegistry
+    from nexa_backtest.models.sklearn import SklearnModel
+
+    registry = ModelRegistry()
+
+    for spec in specs:
+        if ":" not in spec:
+            raise click.ClickException(
+                f"Invalid --model spec '{spec}'. Expected format: 'name:path/to/model.onnx'."
+            )
+        name, _, raw_path = spec.partition(":")
+        name = name.strip()
+        model_path = Path(raw_path.strip())
+        suffix = model_path.suffix.lower()
+
+        if suffix == ".onnx":
+            registry.register(
+                ONNXModel(
+                    name=name,
+                    path=model_path,
+                    input_schema={},
+                    output_schema={},
+                )
+            )
+        elif suffix in {".pkl", ".joblib"}:
+            sidecar = model_path.with_suffix(".json")
+            if not sidecar.exists():
+                sidecar = model_path.parent / (model_path.stem + ".json")
+            input_schema: dict[str, type] = {}
+            output_schema: dict[str, type] = {}
+            feature_order: list[str] = []
+            if sidecar.exists():
+                try:
+                    data = _json.loads(sidecar.read_text(encoding="utf-8"))
+                    _type_map: dict[str, type] = {"float": float, "int": int, "str": str}
+                    input_schema = {
+                        k: _type_map.get(v, float) for k, v in data.get("input_schema", {}).items()
+                    }
+                    output_schema = {
+                        k: _type_map.get(v, float) for k, v in data.get("output_schema", {}).items()
+                    }
+                    feature_order = data.get("feature_order", list(input_schema.keys()))
+                except Exception as exc:
+                    raise click.ClickException(
+                        f"Failed to read JSON sidecar for model '{name}': {exc}"
+                    ) from exc
+            else:
+                feature_order = list(input_schema.keys())
+            registry.register(
+                SklearnModel(
+                    name=name,
+                    path=model_path,
+                    input_schema=input_schema,
+                    output_schema=output_schema,
+                    feature_order=feature_order,
+                )
+            )
+        else:
+            raise click.ClickException(
+                f"Unsupported model file extension '{suffix}' for model '{name}'. "
+                "Supported: .onnx, .pkl, .joblib"
+            )
+
+    return registry

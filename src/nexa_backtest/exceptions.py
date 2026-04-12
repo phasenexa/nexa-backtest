@@ -31,3 +31,19 @@ class MatchingError(NexaBacktestError):
 
 class SignalError(NexaBacktestError):
     """Raised when a signal provider encounters an error."""
+
+
+class ModelNotFoundError(NexaBacktestError):
+    """Raised when a requested model is not registered in the ModelRegistry."""
+
+
+class ModelLoadError(NexaBacktestError):
+    """Raised when a model file cannot be loaded (missing, corrupt, wrong format)."""
+
+
+class ModelInputError(NexaBacktestError):
+    """Raised when features supplied to a model do not match its input schema."""
+
+
+class ModelInferenceError(NexaBacktestError):
+    """Raised when a model's inference call fails at runtime."""

@@ -50,6 +50,7 @@ from nexa_backtest.data.window import DataManifest, SlidingWindow
 from nexa_backtest.engines.clock import SimulatedClock
 from nexa_backtest.engines.matching import ContinuousMatchingEngine, DAAuctionMatcher
 from nexa_backtest.exceptions import AlgoError, DataError, SignalError
+from nexa_backtest.models.registry import ModelRegistry
 from nexa_backtest.signals.base import SignalProvider
 from nexa_backtest.signals.csv_loader import CsvSignalProvider
 from nexa_backtest.signals.registry import SignalRegistry
@@ -319,10 +320,12 @@ class _BacktestContext:
         clock: SimulatedClock,
         signal_registry: SignalRegistry,
         idc_engine: ContinuousMatchingEngine | None = None,
+        model_registry: ModelRegistry | None = None,
     ) -> None:
         self._clock = clock
         self._signal_registry = signal_registry
         self._idc_engine = idc_engine
+        self._model_registry = model_registry
 
         # Shared fill history
         self._fills: list[Fill] = []
@@ -620,18 +623,40 @@ class _BacktestContext:
         return provider.get_history_at(self._clock.now(), lookback)
 
     # ------------------------------------------------------------------
-    # ML models (stub — implemented in Stage 3)
+    # ------------------------------------------------------------------
+    # ML models
     # ------------------------------------------------------------------
 
     def predict(self, model_name: str, features: dict[str, Any]) -> Any:
         """Run inference on a registered ML model.
 
+        Args:
+            model_name: Name the model was registered under in the
+                :class:`~nexa_backtest.models.registry.ModelRegistry`.
+            features: Input feature dictionary matching the model's
+                ``input_schema``.
+
+        Returns:
+            Output dictionary whose keys match the model's ``output_schema``.
+
         Raises:
-            NotImplementedError: ML model registry is not yet implemented.
+            :class:`~nexa_backtest.exceptions.ModelNotFoundError`: If no
+                model with ``model_name`` is registered, or if no
+                ``ModelRegistry`` was supplied to the engine.
+            :class:`~nexa_backtest.exceptions.ModelInputError`: If the
+                features dict does not match the model's input schema.
+            :class:`~nexa_backtest.exceptions.ModelInferenceError`: If the
+                underlying model runtime raises during inference.
         """
-        raise NotImplementedError(
-            "ML model inference is not yet supported. It will be added in a later stage."
-        )
+        from nexa_backtest.exceptions import ModelNotFoundError
+
+        if self._model_registry is None:
+            raise ModelNotFoundError(
+                f"Model '{model_name}' not found: no ModelRegistry was provided to BacktestEngine. "
+                "Pass models=ModelRegistry(...) when constructing the engine."
+            )
+        model = self._model_registry.get(model_name)
+        return model.predict(features)
 
     # ------------------------------------------------------------------
     # Logging
@@ -706,6 +731,8 @@ class BacktestEngine:
         data_dir: Directory containing market data files.
         capital: Starting capital in EUR (informational).
         signals: Explicitly constructed signal providers.
+        models: Registry of ML models available to the algo via
+            :meth:`~nexa_backtest.context.TradingContext.predict`.
 
     Example::
 
@@ -732,6 +759,7 @@ class BacktestEngine:
         data_dir: Path,
         capital: Decimal,
         signals: list[SignalProvider] | None = None,
+        models: ModelRegistry | None = None,
     ) -> None:
         self._exchange = exchange
         self._start = start
@@ -740,6 +768,7 @@ class BacktestEngine:
         self._data_dir = data_dir
         self._capital = capital
         self._signals: list[SignalProvider] = signals or []
+        self._models = models
 
         # Resolve dispatcher based on whether this is a SimpleAlgo or @algo fn.
         if isinstance(algo, SimpleAlgo):
@@ -908,7 +937,9 @@ class BacktestEngine:
 
         first_auction = self._auction_time(self._start)
         clock = SimulatedClock(initial_time=first_auction - timedelta(minutes=1))
-        context = _BacktestContext(clock=clock, signal_registry=registry)
+        context = _BacktestContext(
+            clock=clock, signal_registry=registry, model_registry=self._models
+        )
 
         self._dispatcher.on_setup(context)
         self._discover_signals(registry)
@@ -1016,7 +1047,10 @@ class BacktestEngine:
         start_dt = datetime.combine(self._start, time(0, 0), tzinfo=UTC)
         clock = SimulatedClock(initial_time=start_dt - timedelta(minutes=1))
         context = _BacktestContext(
-            clock=clock, signal_registry=registry, idc_engine=matching_engine
+            clock=clock,
+            signal_registry=registry,
+            idc_engine=matching_engine,
+            model_registry=self._models,
         )
 
         self._dispatcher.on_setup(context)

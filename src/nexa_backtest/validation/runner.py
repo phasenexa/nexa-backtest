@@ -157,17 +157,23 @@ def _status_label(status: str, strict: bool) -> str:
 
 
 class ValidationRunner:
-    """Orchestrates the six-step validation pipeline.
+    """Orchestrates the validation pipeline (six mandatory steps + optional step 7).
 
     Runs each step in sequence. If step 1 (syntax check) produces a syntax
     error, remaining steps are skipped because the file cannot be parsed by
     the AST-based checks.
+
+    Step 7 (Model Compatibility) is included when a ``ModelRegistry`` is
+    provided **or** when the algo source contains ``ctx.predict()`` calls.
 
     Args:
         algo_path: Path to the algo Python file.
         exchange: Exchange identifier, e.g. ``"nordpool"`` or ``"epex_spot"``.
         strict: Treat warnings as errors.
         skip: Names of steps to skip, e.g. ``{"ruff", "mypy"}``.
+        models: Optional model registry. When provided, step 7 validates
+            every registered model and cross-references names used in
+            ``ctx.predict()`` calls.
     """
 
     def __init__(
@@ -176,11 +182,13 @@ class ValidationRunner:
         exchange: str,
         strict: bool = False,
         skip: set[str] | None = None,
+        models: object | None = None,
     ) -> None:
         self._algo_path = algo_path
         self._exchange = exchange
         self._strict = strict
         self._skip = skip or set()
+        self._models = models  # ModelRegistry | None
 
     def run(self) -> ValidationResult:
         """Execute all validation steps and return the aggregated result.
@@ -257,5 +265,17 @@ class ValidationRunner:
                 from nexa_backtest.validation.resource_check import ResourceCheck as RC
 
                 steps.append(RC().run(self._algo_path))
+
+        # Step 7 (optional): Model Compatibility
+        if not syntax_error and "models" not in self._skip:
+            from nexa_backtest.models.registry import ModelRegistry
+            from nexa_backtest.validation.model_check import ModelCheck
+
+            registry: ModelRegistry | None = (
+                self._models if isinstance(self._models, ModelRegistry) else None
+            )
+            result7 = ModelCheck().run(self._algo_path, registry)
+            if result7.status != "skip":
+                steps.append(result7)
 
         return ValidationResult(steps=steps, strict=self._strict)

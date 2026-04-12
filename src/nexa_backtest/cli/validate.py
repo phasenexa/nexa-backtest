@@ -46,16 +46,27 @@ from nexa_backtest.validation.runner import ValidationRunner
     default=False,
     help="Output results as JSON instead of human-readable text.",
 )
+@click.option(
+    "--model",
+    "model_specs",
+    multiple=True,
+    help=(
+        "Register an ML model for step 7 validation as 'name:path'. "
+        "The loader is inferred from the file extension (.onnx, .pkl, .joblib). "
+        "Repeat for multiple models."
+    ),
+)
 def validate_command(
     algo_file: str,
     exchange: str,
     strict: bool,
     skip: str,
     output_json: bool,
+    model_specs: tuple[str, ...],
 ) -> None:
     """Validate ALGO_FILE against the target exchange before running.
 
-    Runs six static analysis steps:
+    Runs six static analysis steps (plus step 7 when --model is used):
 
     \b
     1. Syntax & Style (ruff)
@@ -64,10 +75,15 @@ def validate_command(
     4. Exchange Feature Compatibility
     5. Look-Ahead Bias Detection
     6. Resource Safety
+    7. Model Compatibility (optional, when --model is provided)
 
     Exit codes: 0 = pass, 1 = fail, 2 = strict fail (warnings as errors).
     """
+    from nexa_backtest.cli.main import _build_model_registry
+
     skip_set: set[str] = {s.strip() for s in skip.split(",") if s.strip()}
+
+    model_registry = _build_model_registry(model_specs) if model_specs else None
 
     exchange_display = exchange.replace("_", " ").title()
     if not output_json:
@@ -78,6 +94,7 @@ def validate_command(
         exchange=exchange,
         strict=strict,
         skip=skip_set,
+        models=model_registry,
     )
     result = runner.run()
 
