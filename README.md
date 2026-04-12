@@ -11,7 +11,7 @@
 
 Most backtesting frameworks are built for equities. They assume continuous order books, tick-by-tick data, and price-time priority. European power markets work differently: day-ahead auctions with gate closures, intraday continuous trading, block bids, linked orders, and 15-minute MTUs.
 
-nexa-backtest is purpose-built for this. It replays historical market conditions, runs your trading algorithm against them, and answers two questions: **did it make money?** and **did it beat VWAP?**
+nexa-backtest is purpose-built for this. It replays historical market conditions, runs your trading algorithm against them, actively prevents look-ahead bias, and answers two questions: **did it make money?** and **did it beat VWAP?**
 
 ## Key Features
 
@@ -49,10 +49,11 @@ Work through the notebooks in order — each builds on the previous:
 
 | Notebook | Covers |
 |---|---|
-| [backtester_walkthrough.ipynb](notebooks/backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
-| [idc_and_metrics_walkthrough.ipynb](notebooks/idc_and_metrics_walkthrough.ipynb) | IDC continuous market, order book matching, Sharpe, drawdown, equity curve |
-| [algo_decorator_walkthrough.ipynb](notebooks/algo_decorator_walkthrough.ipynb) | The `@algo` async event-stream API for advanced strategies |
-| [custom_signals_walkthrough.ipynb](notebooks/custom_signals_walkthrough.ipynb) | Custom `SignalProvider` implementations, publication offset, gate closure NOP analysis |
+| [01-backtester_walkthrough.ipynb](notebooks/01-backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
+| [02-idc_and_metrics_walkthrough.ipynb](notebooks/02-idc_and_metrics_walkthrough.ipynb) | IDC continuous market, order book matching, Sharpe, drawdown, equity curve |
+| [03-custom_signals_walkthrough.ipynb](notebooks/03-custom_signals_walkthrough.ipynb) | Custom `SignalProvider` implementations, publication offset, gate closure NOP analysis |
+| [04-algo_decorator_walkthrough.ipynb](notebooks/04-algo_decorator_walkthrough.ipynb) | The `@algo` async event-stream API for advanced strategies |
+| [05-validation_walkthrough.ipynb](notebooks/05-validation_walkthrough.ipynb) | The validation pipeline — all six checks, exit codes, CI integration |
 
 ```bash
 jupyter notebook
