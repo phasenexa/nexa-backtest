@@ -835,7 +835,12 @@ class BacktestEngine:
 
         sharpe = compute_sharpe(equity_snapshots)
         max_dd, max_dd_pct = compute_max_drawdown(equity_snapshots)
-        profit_fac = compute_profit_factor(all_fills, market_vwap or Decimal("0"))
+        product_vwaps_for_metrics = per_product_vwap or {}
+        profit_fac = compute_profit_factor(
+            all_fills,
+            market_vwap or Decimal("0"),
+            product_vwaps_for_metrics or None,
+        )
 
         avg_trade = pnl.total_alpha_eur / Decimal(len(all_fills)) if all_fills else Decimal("0")
 
@@ -843,7 +848,9 @@ class BacktestEngine:
         worst_fill: Fill | None = None
         if all_fills:
             mv = market_vwap or Decimal("0")
-            fill_pnls = [(f, compute_fill_pnl(f, mv)) for f in all_fills]
+            fill_pnls = [
+                (f, compute_fill_pnl(f, mv, product_vwaps_for_metrics or None)) for f in all_fills
+            ]
             best_fill = max(fill_pnls, key=lambda x: x[1])[0]
             worst_fill = min(fill_pnls, key=lambda x: x[1])[0]
 
@@ -876,6 +883,7 @@ class BacktestEngine:
             gate_closure_positions=tuple(all_gate_closure_snapshots),
             avg_gate_closure_nop_mw=avg_gate_nop,
             max_gate_closure_nop_mw=max_gate_nop,
+            product_vwaps=product_vwaps_for_metrics,
         )
 
     # ------------------------------------------------------------------

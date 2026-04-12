@@ -231,7 +231,8 @@ def _top_trades_rows(
     from nexa_backtest.analysis.metrics import compute_fill_pnl
 
     market_vwap = result.pnl.market_vwap
-    fill_pnls = [(f, compute_fill_pnl(f, market_vwap)) for f in result.fills]
+    product_vwaps = result.product_vwaps or None
+    fill_pnls = [(f, compute_fill_pnl(f, market_vwap, product_vwaps)) for f in result.fills]
     sorted_fills = sorted(fill_pnls, key=lambda x: x[1], reverse=best)[:10]
 
     rows = []

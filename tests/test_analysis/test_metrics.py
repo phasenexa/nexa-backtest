@@ -116,3 +116,88 @@ class TestBacktestResultSummary:
         result = _result(buys=_empty_side(), sells=sells)
         summary = result.summary()
         assert "sold below VWAP" in summary
+
+
+class TestComputeFillPnl:
+    """Tests for compute_fill_pnl with and without per-product VWAPs."""
+
+    def test_buy_below_portfolio_vwap_positive(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_fill_pnl
+
+        fill = _fill(Side.BUY, 45.0)
+        # bought at 45, portfolio VWAP 50 → +5 * 10 = +50
+        assert compute_fill_pnl(fill, Decimal("50")) == Decimal("50")
+
+    def test_sell_above_portfolio_vwap_positive(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_fill_pnl
+
+        fill = _fill(Side.SELL, 55.0)
+        # sold at 55, portfolio VWAP 50 → +5 * 10 = +50
+        assert compute_fill_pnl(fill, Decimal("50")) == Decimal("50")
+
+    def test_buy_uses_product_vwap_when_provided(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_fill_pnl
+
+        fill = _fill(Side.BUY, 48.0)
+        product_vwaps = {"P1": Decimal("52.0")}
+        # product VWAP 52, bought at 48 → +4 * 10 = +40
+        result = compute_fill_pnl(fill, Decimal("50"), product_vwaps)
+        assert result == Decimal("40")
+
+    def test_buy_falls_back_to_portfolio_vwap_for_unknown_product(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_fill_pnl
+
+        fill = _fill(Side.BUY, 48.0)
+        product_vwaps = {"OTHER": Decimal("52.0")}
+        # product not in map, falls back to portfolio VWAP 50 → +2 * 10 = +20
+        result = compute_fill_pnl(fill, Decimal("50"), product_vwaps)
+        assert result == Decimal("20")
+
+    def test_sell_uses_product_vwap_when_provided(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_fill_pnl
+
+        fill = _fill(Side.SELL, 54.0)
+        product_vwaps = {"P1": Decimal("48.0")}
+        # product VWAP 48, sold at 54 → +6 * 10 = +60
+        result = compute_fill_pnl(fill, Decimal("50"), product_vwaps)
+        assert result == Decimal("60")
+
+
+class TestComputeProfitFactor:
+    """Tests for compute_profit_factor with and without per-product VWAPs."""
+
+    def test_no_losses_returns_none(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_profit_factor
+
+        fills = [_fill(Side.BUY, 45.0), _fill(Side.SELL, 55.0)]
+        # Both beats VWAP of 50 → no losses → None
+        assert compute_profit_factor(fills, Decimal("50")) is None
+
+    def test_all_losses_returns_zero(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_profit_factor
+
+        fills = [_fill(Side.BUY, 60.0)]  # bought above VWAP → loss
+        result = compute_profit_factor(fills, Decimal("50"))
+        assert result == Decimal("0")
+
+    def test_gains_and_losses_ratio(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_profit_factor
+
+        gain_fill = _fill(Side.BUY, 40.0)  # +10 * 10 = +100
+        loss_fill = _fill(Side.BUY, 60.0)  # -10 * 10 = -100
+        result = compute_profit_factor([gain_fill, loss_fill], Decimal("50"))
+        assert result == Decimal("1")
+
+    def test_uses_product_vwaps_consistently(self) -> None:
+        from nexa_backtest.analysis.metrics import compute_profit_factor
+
+        # product VWAP for P1 is 60; fill buys at 55 → gain of 5*10=50
+        # portfolio VWAP is 50; same fill would show a loss of 5*10=50
+        fill = _fill(Side.BUY, 55.0)
+        product_vwaps = {"P1": Decimal("60.0")}
+
+        portfolio_result = compute_profit_factor([fill], Decimal("50"))
+        assert portfolio_result == Decimal("0")  # loss vs portfolio VWAP
+
+        product_result = compute_profit_factor([fill], Decimal("50"), product_vwaps)
+        assert product_result is None  # gain vs product VWAP → no losses

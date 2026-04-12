@@ -1020,3 +1020,103 @@ class TestIDCSignalLoop:
         # Engine must not raise even though every signal lookup fails.
         result = engine.run()
         assert result is not None
+
+
+def test_profit_factor_consistent_with_total_pnl_sign(tmp_path: Path) -> None:
+    """profit_factor and total_alpha_eur must agree on the sign of performance.
+
+    When all fills beat their per-product VWAP, total_alpha_eur is positive and
+    profit_factor should be None (no losses). Before the fix, profit_factor used
+    the portfolio VWAP while total_alpha_eur used per-product VWAPs, producing
+    contradictory output (e.g. +784 EUR total PnL alongside Profit Factor 0.00).
+    """
+    ts_base = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+
+    # Historical order book: resting sell at 48.00, resting buy at 52.00.
+    rows = [
+        {
+            "timestamp": ts_base,
+            "event_type": "new",
+            "order_id": "h-sell-1",
+            "zone": "NO1",
+            "product_id": "NO1-QH-1000",
+            "side": "sell",
+            "price_eur_mwh": 48.0,
+            "volume_mw": 5.0,
+            "remaining_mw": 5.0,
+            "aggressor_side": None,
+            "trade_id": None,
+        },
+        {
+            "timestamp": ts_base + timedelta(seconds=1),
+            "event_type": "new",
+            "order_id": "h-buy-1",
+            "zone": "NO1",
+            "product_id": "NO1-QH-1000",
+            "side": "buy",
+            "price_eur_mwh": 52.0,
+            "volume_mw": 5.0,
+            "remaining_mw": 5.0,
+            "aggressor_side": None,
+            "trade_id": None,
+        },
+        # Historical trade: market trades at 50.00 (between the two resting orders).
+        # aggressor is "buy" → hits the resting sell side.
+        # The algo's resting buy at 52.00 also gets hit by the aggressive sell.
+        {
+            "timestamp": ts_base + timedelta(seconds=2),
+            "event_type": "trade",
+            "order_id": "h-sell-1",
+            "zone": "NO1",
+            "product_id": "NO1-QH-1000",
+            "side": "sell",
+            "price_eur_mwh": 50.0,
+            "volume_mw": 5.0,
+            "remaining_mw": 0.0,
+            "aggressor_side": "buy",
+            "trade_id": "tr-1",
+        },
+    ]
+    _write_idc_parquet(tmp_path, "NO1", rows)
+
+    class _PassiveBuyAlgo(SimpleAlgo):
+        """Places a passive limit buy well above VWAP so it gets filled."""
+
+        def on_bar(self, ctx: TradingContext) -> None:
+            if ctx.now().hour == 10 and ctx.now().minute == 0:
+                ctx.place_order(
+                    Order.buy("NO1-QH-1000", volume_mw=Decimal("5"), price_eur_mwh=Decimal("55"))
+                )
+
+    engine = BacktestEngine(
+        algo=_PassiveBuyAlgo(),
+        exchange="nordpool",
+        start=date(2026, 3, 1),
+        end=date(2026, 3, 1),
+        products=["NO1-QH"],
+        data_dir=tmp_path,
+        capital=Decimal("100000"),
+    )
+    result = engine.run()
+
+    total_pnl = result.pnl.total_alpha_eur
+
+    if result.profit_factor is not None:
+        # If there are losses, profit_factor and total_pnl must agree on sign.
+        # Positive total_pnl → profit_factor must be > 1.
+        # Negative total_pnl → profit_factor must be < 1.
+        if total_pnl > 0:
+            assert result.profit_factor >= Decimal("1"), (
+                f"total_pnl={total_pnl} is positive but profit_factor="
+                f"{result.profit_factor} < 1, indicating inconsistent benchmarks"
+            )
+        elif total_pnl < 0:
+            assert result.profit_factor <= Decimal("1"), (
+                f"total_pnl={total_pnl} is negative but profit_factor="
+                f"{result.profit_factor} > 1, indicating inconsistent benchmarks"
+            )
+    # If profit_factor is None (no losses), total_pnl must be non-negative.
+    else:
+        assert total_pnl >= 0, (
+            f"profit_factor is None (no losses) but total_pnl={total_pnl} is negative"
+        )
