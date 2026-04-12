@@ -43,7 +43,7 @@ from nexa_backtest.analysis.metrics import (
     compute_sharpe,
 )
 from nexa_backtest.analysis.pnl import compute_pnl
-from nexa_backtest.analysis.vwap import compute_market_vwap
+from nexa_backtest.analysis.vwap import compute_idc_vwaps, compute_market_vwap
 from nexa_backtest.context import SignalValue, TradingContext
 from nexa_backtest.data.loader import ParquetLoader
 from nexa_backtest.data.window import DataManifest, SlidingWindow
@@ -65,6 +65,8 @@ from nexa_backtest.types import (
     FillEvent,
     GateClosureEvent,
     GateClosureSnapshot,
+    GateClosureWarning,
+    HistoricalTrade,
     MarketEvent,
     Order,
     OrderBook,
@@ -150,6 +152,11 @@ class SimpleAlgoDispatcher:
     def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
         """Call ``algo.on_gate_closure``."""
         self._algo.on_gate_closure(ctx, product_id)
+
+    def on_gate_closure_warning(
+        self, ctx: TradingContext, product_id: str, remaining: timedelta
+    ) -> None:
+        """No-op for SimpleAlgo — gate closure warnings are an ``@algo``-only event."""
 
     def on_error(self, ctx: TradingContext, exc: Exception) -> None:
         """Call ``algo.on_error``."""
@@ -243,6 +250,14 @@ class AsyncAlgoDispatcher:
     def on_gate_closure(self, ctx: TradingContext, product_id: str) -> None:
         """Push a :class:`~nexa_backtest.types.GateClosureEvent`."""
         self._push(GateClosureEvent(timestamp=ctx.now(), product_id=product_id))
+
+    def on_gate_closure_warning(
+        self, ctx: TradingContext, product_id: str, remaining: timedelta
+    ) -> None:
+        """Push a :class:`~nexa_backtest.types.GateClosureWarning` to the event stream."""
+        self._push(
+            GateClosureWarning(timestamp=ctx.now(), product_id=product_id, remaining=remaining)
+        )
 
     def on_error(self, ctx: TradingContext, exc: Exception) -> None:
         """Re-raise errors; the algo is expected to handle them in the stream."""
@@ -790,9 +805,10 @@ class BacktestEngine:
             market_vwap = None
 
         # --- IDC run ---
+        idc_vwap_accum: dict[str, tuple[Decimal, Decimal]] = {}
         if idc_products:
-            idc_fills, idc_snapshots, idc_pnl, idc_context, _, gate_snaps = self._run_idc(
-                zone, registry
+            idc_fills, idc_snapshots, idc_pnl, idc_context, _, gate_snaps, idc_vwap_accum = (
+                self._run_idc(zone, registry)
             )
             all_fills.extend(idc_fills)
             equity_snapshots.extend(idc_snapshots)
@@ -801,11 +817,19 @@ class BacktestEngine:
             if context is None:
                 context = idc_context
 
+        # Compute per-product and portfolio IDC VWAPs from accumulated trade data.
+        per_product_vwap, idc_portfolio_vwap = compute_idc_vwaps(idc_vwap_accum)
+
         # Compute analysis
         market_data = self._load_da_or_empty(zone, market_vwap)
         if market_vwap is None:
             market_vwap = compute_market_vwap(market_data) if len(market_data) > 0 else Decimal("0")
-        pnl = compute_pnl(all_fills, market_data)
+        pnl = compute_pnl(
+            all_fills,
+            market_data,
+            product_vwaps=per_product_vwap or None,
+            idc_portfolio_vwap=idc_portfolio_vwap if idc_portfolio_vwap > 0 else None,
+        )
 
         equity_snapshots.sort(key=lambda s: s.timestamp)
 
@@ -905,17 +929,7 @@ class BacktestEngine:
                 else:  # pragma: no cover
                     context._product_delivery_starts[pid] = ts
 
-            for signal_name in self._dispatcher.subscribed_signals:
-                if registry.has(signal_name):
-                    try:
-                        value = context.get_signal(signal_name)
-                        self._dispatcher.on_signal(context, signal_name, value)
-                    except SignalError:
-                        logger.debug(
-                            "No value yet for signal '%s' at %s — skipping.",
-                            signal_name,
-                            auction_time.isoformat(),
-                        )
+            self._dispatch_signals(context, registry)
 
             for _, product_row in day_data.sort_values("timestamp").iterrows():
                 auction_info = AuctionInfo(
@@ -979,6 +993,7 @@ class BacktestEngine:
         _BacktestContext,
         SimulatedClock,
         list[GateClosureSnapshot],
+        dict[str, tuple[Decimal, Decimal]],
     ]:
         """Run the IDC continuous backtest loop."""
         # Build sliding window
@@ -1013,6 +1028,11 @@ class BacktestEngine:
         equity_snapshots: list[EquitySnapshot] = []
         gate_closure_snapshots: list[GateClosureSnapshot] = []
         cumulative_pnl = Decimal("0")
+        gate_warned: set[str] = set()
+        # IDC market VWAP accumulators: {product_id: (sum_notional, sum_volume)}
+        # Accumulated incrementally as HistoricalTrade events flow through the loop.
+        # O(P) memory — never loads more data than the current sliding window.
+        idc_vwap_accum: dict[str, tuple[Decimal, Decimal]] = {}
 
         current_time = start_dt
         while current_time < end_dt:
@@ -1028,6 +1048,13 @@ class BacktestEngine:
                     with contextlib.suppress(Exception):
                         self._dispatcher.on_error(context, exc)
                     continue
+                # Accumulate market-side trade VWAP incrementally.
+                if isinstance(event, HistoricalTrade):
+                    prev = idc_vwap_accum.get(event.product_id, (Decimal("0"), Decimal("0")))
+                    idc_vwap_accum[event.product_id] = (
+                        prev[0] + event.price_eur_mwh * event.volume_mw,
+                        prev[1] + event.volume_mw,
+                    )
                 # Forward historical event to @algo stream.
                 self._dispatcher.on_market_event(context, event)
                 for fill in fills:
@@ -1035,14 +1062,17 @@ class BacktestEngine:
                     all_fills.append(fill)
                     self._dispatcher.on_fill(context, fill)
 
+            # Dispatch GateClosureWarning for products whose gate closes in this MTU,
+            # giving the algo one last chance to act before gate closure.
+            for product_id, closure_time in list(matching_engine._gate_closures.items()):
+                if product_id not in gate_warned and current_time < closure_time <= next_time:
+                    self._dispatcher.on_gate_closure_warning(
+                        context, product_id, closure_time - current_time
+                    )
+                    gate_warned.add(product_id)
+
             # Signal updates at each bar
-            for signal_name in self._dispatcher.subscribed_signals:
-                if registry.has(signal_name):
-                    try:
-                        value = context.get_signal(signal_name)
-                        self._dispatcher.on_signal(context, signal_name, value)
-                    except SignalError:
-                        pass
+            self._dispatch_signals(context, registry)
 
             # on_bar: algo evaluates market and places orders
             self._dispatcher.on_bar(context)
@@ -1079,9 +1109,15 @@ class BacktestEngine:
             # Equity snapshot at each bar where fills occurred
             bar_all_fills = [f for f in all_fills if _in_mtu(f.timestamp, current_time, next_time)]
             if bar_all_fills:
-                # Use zero VWAP as fallback for IDC — we don't have market-wide VWAP
+                # Use running per-product VWAP for equity curve.
+                # This is a partial VWAP (trades seen so far) — a good approximation
+                # that is much better than zero and directionally correct.
+                running_vwaps, _ = compute_idc_vwaps(idc_vwap_accum)
                 bar_pnl = sum(
-                    (compute_fill_pnl(f, Decimal("0")) for f in bar_all_fills),
+                    (
+                        compute_fill_pnl(f, running_vwaps.get(f.product_id, Decimal("0")))
+                        for f in bar_all_fills
+                    ),
                     Decimal("0"),
                 )
                 cumulative_pnl += bar_pnl
@@ -1104,7 +1140,15 @@ class BacktestEngine:
             current_time = next_time
 
         self._dispatcher.on_teardown(context)
-        return all_fills, equity_snapshots, cumulative_pnl, context, clock, gate_closure_snapshots
+        return (
+            all_fills,
+            equity_snapshots,
+            cumulative_pnl,
+            context,
+            clock,
+            gate_closure_snapshots,
+            idc_vwap_accum,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -1136,6 +1180,20 @@ class BacktestEngine:
             gate_closure = current - _IDC_GATE_CLOSURE_BEFORE_DELIVERY
             engine.set_gate_closure(product_id, gate_closure)
             current += _MTU_DURATION
+
+    def _dispatch_signals(self, context: _BacktestContext, registry: SignalRegistry) -> None:
+        """Dispatch current signal values to the algo for all subscribed signals."""
+        for signal_name in self._dispatcher.subscribed_signals:
+            if registry.has(signal_name):
+                try:
+                    value = context.get_signal(signal_name)
+                    self._dispatcher.on_signal(context, signal_name, value)
+                except SignalError:
+                    logger.debug(
+                        "No value yet for signal '%s' at %s — skipping.",
+                        signal_name,
+                        context.now().isoformat(),
+                    )
 
     def _discover_signals(self, registry: SignalRegistry) -> None:
         """Auto-register CSV providers for subscribed but unregistered signals."""

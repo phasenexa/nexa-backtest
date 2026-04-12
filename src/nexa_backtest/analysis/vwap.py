@@ -12,6 +12,44 @@ from decimal import Decimal
 import pandas as pd
 
 
+def compute_idc_vwaps(
+    accum: dict[str, tuple[Decimal, Decimal]],
+) -> tuple[dict[str, Decimal], Decimal]:
+    """Compute per-product and portfolio IDC market VWAPs from trade accumulators.
+
+    Converts raw ``(sum_notional, sum_volume)`` accumulators — built
+    incrementally as ``HistoricalTrade`` events flow through the IDC replay
+    loop — into per-product VWAPs and a single portfolio-level VWAP.
+
+    This is O(P) in memory (P = number of products), compatible with
+    the sliding-window replay design.
+
+    Args:
+        accum: Per-product accumulators mapping ``product_id`` to
+            ``(sum_notional_eur, sum_volume_mw)``.
+
+    Returns:
+        ``(per_product_vwap, portfolio_vwap)`` where ``per_product_vwap``
+        maps each product to its market VWAP in EUR/MWh and
+        ``portfolio_vwap`` is the volume-weighted average across all
+        products. Both are zero when no trades were observed.
+    """
+    per_product: dict[str, Decimal] = {}
+    total_notional = Decimal("0")
+    total_volume = Decimal("0")
+    for pid, (notional, volume) in accum.items():
+        if volume > 0:
+            per_product[pid] = Decimal(str(round(float(notional / volume), 6)))
+            total_notional += notional
+            total_volume += volume
+    portfolio = (
+        Decimal(str(round(float(total_notional / total_volume), 6)))
+        if total_volume > 0
+        else Decimal("0")
+    )
+    return per_product, portfolio
+
+
 def compute_market_vwap(market_data: pd.DataFrame) -> Decimal:
     """Compute the volume-weighted average clearing price across all products.
 

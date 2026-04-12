@@ -32,6 +32,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from nexa_backtest.data.schema import IDC_EVENTS_SCHEMA
+
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
@@ -55,26 +57,6 @@ ROWS_PER_ROW_GROUP = EVENTS_PER_PRODUCT_PER_HOUR * 4 * len(PRODUCTS)
 
 OUTPUT_DIR = Path(__file__).parent / "fixtures" / "nordpool" / "idc_events"
 OUTPUT_FILE = OUTPUT_DIR / f"{ZONE}_2026_03.parquet"
-
-
-# ---------------------------------------------------------------------------
-# Schema (matches IDC_EVENTS_SCHEMA with optional trade columns)
-# ---------------------------------------------------------------------------
-IDC_SCHEMA = pa.schema(
-    [
-        ("timestamp", pa.timestamp("ns", tz="UTC")),
-        ("event_type", pa.string()),
-        ("order_id", pa.string()),
-        ("zone", pa.string()),
-        ("product_id", pa.string()),
-        ("side", pa.string()),
-        ("price_eur_mwh", pa.float64()),
-        ("volume_mw", pa.float64()),
-        ("remaining_mw", pa.float64()),
-        ("aggressor_side", pa.string()),  # nullable
-        ("trade_id", pa.string()),  # nullable
-    ]
-)
 
 
 def _round_price(price: float) -> float:
@@ -180,7 +162,7 @@ def generate_idc_events(
             else:
                 # --- New order event ---
                 side = "buy" if rng.random() < 0.5 else "sell"
-                spread = _round_price(rng.uniform(0.10, 0.50))
+                spread = _round_price(rng.uniform(1.0, 3.0))
                 if side == "buy":
                     price = _round_price(mid_price - spread)
                 else:
@@ -226,9 +208,9 @@ def write_fixture(df: pd.DataFrame, output_path: Path, rows_per_rg: int) -> None
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    table = pa.Table.from_pandas(df, schema=IDC_SCHEMA, preserve_index=False)
+    table = pa.Table.from_pandas(df, schema=IDC_EVENTS_SCHEMA, preserve_index=False)
 
-    writer = pq.ParquetWriter(output_path, schema=IDC_SCHEMA)
+    writer = pq.ParquetWriter(output_path, schema=IDC_EVENTS_SCHEMA)
     total_rows = len(table)
     for start in range(0, total_rows, rows_per_rg):
         chunk = table.slice(start, min(rows_per_rg, total_rows - start))

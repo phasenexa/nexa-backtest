@@ -59,8 +59,20 @@ class PnlSummary:
     total_alpha_eur: Decimal
 
 
-def _side_summary(fills: list[Fill], market_vwap: Decimal, side: Side) -> SideSummary:
-    """Compute aggregated statistics for one side of fills."""
+def _side_summary(
+    fills: list[Fill],
+    market_vwap: Decimal,
+    side: Side,
+    product_vwaps: dict[str, Decimal] | None = None,
+) -> SideSummary:
+    """Compute aggregated statistics for one side of fills.
+
+    When ``product_vwaps`` is provided (IDC runs), each fill is benchmarked
+    against its own product's market VWAP rather than the portfolio-level
+    ``market_vwap``.  This gives accurate per-fill win/loss attribution and
+    total alpha.  The headline ``vwap_alpha`` field still uses ``market_vwap``
+    so it remains comparable across runs.
+    """
     side_fills = [f for f in fills if f.side == side]
     if not side_fills:
         return SideSummary(
@@ -76,14 +88,20 @@ def _side_summary(fills: list[Fill], market_vwap: Decimal, side: Side) -> SideSu
     total_cost: Decimal = sum((f.price * f.volume for f in side_fills), Decimal("0"))
     avg_price = total_cost / total_volume if total_volume else Decimal("0")
 
+    def _benchmark(fill: Fill) -> Decimal:
+        if product_vwaps:
+            return product_vwaps.get(fill.product_id, market_vwap)
+        return market_vwap
+
     if side == Side.BUY:
         vwap_alpha = avg_price - market_vwap  # negative = good (bought below VWAP)
-        win_count = sum(1 for f in side_fills if f.price < market_vwap)
+        win_count = sum(1 for f in side_fills if f.price < _benchmark(f))
+        total_alpha = sum(((_benchmark(f) - f.price) * f.volume for f in side_fills), Decimal("0"))
     else:
         vwap_alpha = market_vwap - avg_price  # negative = sold above VWAP (good)
-        win_count = sum(1 for f in side_fills if f.price > market_vwap)
+        win_count = sum(1 for f in side_fills if f.price > _benchmark(f))
+        total_alpha = sum(((f.price - _benchmark(f)) * f.volume for f in side_fills), Decimal("0"))
 
-    total_alpha = -vwap_alpha * total_volume  # EUR benefit vs passive VWAP execution
     win_rate = win_count / len(side_fills)
 
     return SideSummary(
@@ -96,28 +114,47 @@ def _side_summary(fills: list[Fill], market_vwap: Decimal, side: Side) -> SideSu
     )
 
 
-def compute_pnl(fills: list[Fill], market_data: pd.DataFrame) -> PnlSummary:
+def compute_pnl(
+    fills: list[Fill],
+    market_data: pd.DataFrame,
+    product_vwaps: dict[str, Decimal] | None = None,
+    idc_portfolio_vwap: Decimal | None = None,
+) -> PnlSummary:
     """Compute PnL metrics from fills and market clearing price data.
 
     The benchmark is the market VWAP: the volume-weighted average clearing
-    price across *all* products in ``market_data``, not just those traded.
-    A positive total alpha means the algo executed better than passive
-    VWAP participation would have.
+    price across *all* products in the backtest period.  For DA runs this
+    comes from ``market_data`` (DA clearing prices).  For IDC runs it comes
+    from ``idc_portfolio_vwap`` (derived from historical trade events in the
+    sliding-window replay).
+
+    A positive total alpha means the algo executed better than passive VWAP
+    participation would have.
 
     Args:
         fills: All fills produced during the backtest run.
         market_data: DataFrame returned by
             :meth:`~nexa_backtest.data.loader.ParquetLoader.load_da_prices`,
             containing ``price_eur_mwh`` and ``volume_mwh`` for all products
-            in the period.
+            in the period.  May be empty for IDC-only runs.
+        product_vwaps: Optional per-product IDC market VWAPs
+            ``{product_id: vwap_eur_mwh}``.  When provided, each fill is
+            benchmarked against its own product's VWAP rather than the
+            portfolio-level benchmark.
+        idc_portfolio_vwap: Portfolio-level IDC VWAP to use when DA price
+            data is absent.  Derived from the same trade accumulators as
+            ``product_vwaps``.
 
     Returns:
         :class:`PnlSummary` with market VWAP and per-side metrics.
     """
     market_vwap = compute_market_vwap(market_data)
+    # When no DA data is present, fall back to the IDC portfolio VWAP.
+    if market_vwap == Decimal("0") and idc_portfolio_vwap is not None and idc_portfolio_vwap > 0:
+        market_vwap = idc_portfolio_vwap
 
-    buys = _side_summary(fills, market_vwap, Side.BUY)
-    sells = _side_summary(fills, market_vwap, Side.SELL)
+    buys = _side_summary(fills, market_vwap, Side.BUY, product_vwaps)
+    sells = _side_summary(fills, market_vwap, Side.SELL, product_vwaps)
 
     total_alpha = buys.total_alpha_eur + sells.total_alpha_eur
 
