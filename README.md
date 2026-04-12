@@ -464,10 +464,12 @@ nexa-backtest integrates with the wider Phase Nexa toolkit:
 | Order book access (`get_orderbook`, `get_best_bid/ask`) | Done (Task 04) |
 | Gate closure handling | Done (Task 04) |
 | IDC fixture generator | Done (Task 04) |
-| `@algo` low-level API | Planned (Stage 2) |
+| `@algo` low-level API | Done (Task 05) |
+| EPEX SPOT adapter | Done (Task 05) |
+| Gate closure NOP tracking | Done (Task 05) |
+| Validation pipeline (`nexa validate`) | Done (Task 06) |
 | Built-in signal providers | Planned (Stage 2) |
-| EPEX SPOT / EEX adapters | Planned (Stage 2) |
-| Validation pipeline | Planned (Stage 3) |
+| EEX adapter | Planned (Stage 2) |
 | ML model registry | Planned (Stage 3) |
 | Multi-algo replay | Planned (Stage 3) |
 | Paper trading engine | Planned (Stage 4) |
