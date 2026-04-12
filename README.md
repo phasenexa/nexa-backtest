@@ -43,16 +43,19 @@ pip install nexa-backtest[live]         # Live trading via nexa-connect
 pip install nexa-backtest[all]          # Everything
 ```
 
-## Walkthrough Notebook
+## Walkthrough Notebooks
 
-New to backtesting or power markets? Start here:
+Work through the notebooks in order — each builds on the previous:
 
-**[notebooks/backtester_walkthrough.ipynb](notebooks/backtester_walkthrough.ipynb)**
-
-A guided notebook covering: what a backtester is, MTUs, DA auctions, gate closures, the price-taker assumption, writing your first algo, running a backtest, interpreting every result metric, the signal system, and look-ahead bias prevention. Runs end-to-end against the included fixture data with no extra setup.
+| Notebook | Covers |
+|---|---|
+| [backtester_walkthrough.ipynb](notebooks/backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
+| [idc_and_metrics_walkthrough.ipynb](notebooks/idc_and_metrics_walkthrough.ipynb) | IDC continuous market, order book matching, Sharpe, drawdown, equity curve |
+| [algo_decorator_walkthrough.ipynb](notebooks/algo_decorator_walkthrough.ipynb) | The `@algo` async event-stream API for advanced strategies |
+| [custom_signals_walkthrough.ipynb](notebooks/custom_signals_walkthrough.ipynb) | Custom `SignalProvider` implementations, publication offset, gate closure NOP analysis |
 
 ```bash
-jupyter notebook notebooks/backtester_walkthrough.ipynb
+jupyter notebook
 ```
 
 ## Quick Start
