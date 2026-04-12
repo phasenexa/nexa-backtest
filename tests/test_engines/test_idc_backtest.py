@@ -17,27 +17,12 @@ import pytest
 
 from nexa_backtest.algo import SimpleAlgo
 from nexa_backtest.context import TradingContext
+from nexa_backtest.data.schema import IDC_EVENTS_SCHEMA
 from nexa_backtest.engines.backtest import BacktestEngine, _mtu_to_product_id
 from nexa_backtest.types import Fill, Order, Side
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "nordpool"
 FIXTURE_PARQUET = FIXTURE_DIR / "idc_events" / "NO1_2026_03.parquet"
-
-IDC_SCHEMA = pa.schema(
-    [
-        ("timestamp", pa.timestamp("ns", tz="UTC")),
-        ("event_type", pa.string()),
-        ("order_id", pa.string()),
-        ("zone", pa.string()),
-        ("product_id", pa.string()),
-        ("side", pa.string()),
-        ("price_eur_mwh", pa.float64()),
-        ("volume_mw", pa.float64()),
-        ("remaining_mw", pa.float64()),
-        ("aggressor_side", pa.string()),
-        ("trade_id", pa.string()),
-    ]
-)
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +43,11 @@ def _write_idc_parquet(
     if rows:
         df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        table = pa.Table.from_pandas(df, schema=IDC_SCHEMA, preserve_index=False)
+        table = pa.Table.from_pandas(df, schema=IDC_EVENTS_SCHEMA, preserve_index=False)
     else:
         table = pa.table(
-            {field.name: pa.array([], type=field.type) for field in IDC_SCHEMA},
-            schema=IDC_SCHEMA,
+            {field.name: pa.array([], type=field.type) for field in IDC_EVENTS_SCHEMA},
+            schema=IDC_EVENTS_SCHEMA,
         )
     pq.write_table(table, path)
     return path
@@ -826,6 +811,143 @@ class TestIDCContextGetVwap:
         engine.run()
 
         assert any(v is not None for v in vwaps)
+
+
+class TestIDCMarketVwap:
+    """IDC market VWAP must be derived from historical trade events, not fixed at zero."""
+
+    def test_idc_market_vwap_is_nonzero_when_trades_present(self, tmp_path: Path) -> None:
+        """market_vwap must be > 0 when the fixture contains trade events."""
+        product = "NO1-QH-0800"
+        t = datetime(2026, 3, 1, 7, 45, tzinfo=UTC)
+        rows = [
+            _idc_row(
+                t,
+                product,
+                event_type="trade",
+                order_id="t1",
+                side="sell",
+                price=50.0,
+                volume=10.0,
+                trade_id="tr1",
+            ),
+            _idc_row(
+                t + timedelta(seconds=1),
+                product,
+                event_type="trade",
+                order_id="t2",
+                side="sell",
+                price=60.0,
+                volume=10.0,
+                trade_id="tr2",
+            ),
+        ]
+        _write_idc_parquet(tmp_path, "NO1", rows)
+
+        engine = BacktestEngine(
+            algo=_NoOpIDCAlgo(),
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            capital=Decimal("100000"),
+        )
+        result = engine.run()
+
+        assert result.pnl.market_vwap > Decimal("0"), (
+            "IDC market VWAP should reflect historical trade prices, not be zero"
+        )
+
+    def test_idc_vwap_is_volume_weighted_average_of_market_trades(self, tmp_path: Path) -> None:
+        """VWAP = sum(price * volume) / sum(volume) over all historical trade events."""
+        product = "NO1-QH-0800"
+        t = datetime(2026, 3, 1, 7, 45, tzinfo=UTC)
+        # 10 MW @ 50 EUR + 10 MW @ 60 EUR → VWAP = 55 EUR/MWh
+        rows = [
+            _idc_row(
+                t,
+                product,
+                event_type="trade",
+                order_id="t1",
+                side="sell",
+                price=50.0,
+                volume=10.0,
+                trade_id="tr1",
+            ),
+            _idc_row(
+                t + timedelta(seconds=1),
+                product,
+                event_type="trade",
+                order_id="t2",
+                side="sell",
+                price=60.0,
+                volume=10.0,
+                trade_id="tr2",
+            ),
+        ]
+        _write_idc_parquet(tmp_path, "NO1", rows)
+
+        engine = BacktestEngine(
+            algo=_NoOpIDCAlgo(),
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            capital=Decimal("100000"),
+        )
+        result = engine.run()
+
+        assert result.pnl.market_vwap == Decimal("55"), (
+            f"Expected VWAP=55, got {result.pnl.market_vwap}"
+        )
+
+    def test_idc_fill_below_vwap_counts_as_win(self, tmp_path: Path) -> None:
+        """A fill priced below the market VWAP for that product should count as a win."""
+        product = "NO1-QH-0800"
+        t = datetime(2026, 3, 1, 7, 45, tzinfo=UTC)
+        rows = [
+            # Market VWAP: 10 MW @ 60 EUR → VWAP = 60
+            _idc_row(
+                t,
+                product,
+                event_type="trade",
+                order_id="t1",
+                side="sell",
+                price=60.0,
+                volume=10.0,
+                trade_id="tr1",
+            ),
+            # Algo can buy from this sell order at 50 EUR (below market VWAP of 60)
+            _idc_row(
+                t,
+                product,
+                event_type="new",
+                order_id="sell-1",
+                side="sell",
+                price=50.0,
+                volume=10.0,
+            ),
+        ]
+        _write_idc_parquet(tmp_path, "NO1", rows)
+
+        engine = BacktestEngine(
+            algo=_AlwaysBuyIDCAlgo(product),
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            capital=Decimal("100000"),
+        )
+        result = engine.run()
+
+        assert len(result.fills) > 0, "Expected at least one fill"
+        assert result.pnl.buys.win_rate == 1.0, (
+            f"All fills at 50 EUR < market VWAP 60 EUR should be wins, "
+            f"got win_rate={result.pnl.buys.win_rate}"
+        )
 
 
 class TestIDCSignalLoop:

@@ -7,6 +7,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from nexa_backtest import (
@@ -19,6 +21,7 @@ from nexa_backtest import (
     algo,
 )
 from nexa_backtest.context import TradingContext
+from nexa_backtest.data.schema import IDC_EVENTS_SCHEMA
 from nexa_backtest.engines.backtest import (
     AsyncAlgoDispatcher,
     SimpleAlgoDispatcher,
@@ -27,7 +30,7 @@ from nexa_backtest.engines.backtest import (
 from nexa_backtest.engines.clock import SimulatedClock
 from nexa_backtest.exceptions import AlgoError
 from nexa_backtest.signals.registry import SignalRegistry
-from nexa_backtest.types import MarketEvent, SignalValue
+from nexa_backtest.types import GateClosureEvent, GateClosureWarning, MarketEvent, SignalValue
 
 # ---------------------------------------------------------------------------
 # Tests: @algo decorator validation
@@ -522,3 +525,64 @@ def test_async_algo_receives_bar_events_from_da_auction(tmp_path: Path) -> None:
     engine.run()
 
     assert len(bar_events) == 2
+
+
+def test_async_algo_receives_gate_closure_warning_before_event(tmp_path: Path) -> None:
+    """@algo must receive GateClosureWarning before GateClosureEvent for each product."""
+    from nexa_backtest.data.schema import IDC_EVENTS_SUBDIR
+
+    # Write an empty IDC parquet so the engine has an idc_events directory
+    idc_dir = tmp_path / IDC_EVENTS_SUBDIR
+    idc_dir.mkdir(parents=True)
+    empty = pa.table(
+        {
+            name: pa.array([], type=field.type)
+            for name, field in zip(IDC_EVENTS_SCHEMA.names, IDC_EVENTS_SCHEMA, strict=True)
+        },
+        schema=IDC_EVENTS_SCHEMA,
+    )
+    pq.write_table(empty, idc_dir / "NO1_2026_03.parquet")
+
+    received: list[MarketEvent] = []
+
+    @algo(name="gate_watcher", version="1.0.0")
+    async def run(ctx: TradingContext) -> None:
+        async for event in ctx.events():
+            if isinstance(event, (GateClosureWarning, GateClosureEvent)):
+                received.append(event)
+
+    engine = BacktestEngine(
+        algo=run,
+        exchange="nordpool",
+        start=date(2026, 3, 1),
+        end=date(2026, 3, 1),
+        products=["NO1-QH"],
+        data_dir=tmp_path,
+        capital=Decimal("100000"),
+    )
+    engine.run()
+
+    warnings = [e for e in received if isinstance(e, GateClosureWarning)]
+    closures = [e for e in received if isinstance(e, GateClosureEvent)]
+
+    assert len(warnings) > 0, "Expected GateClosureWarning events to be dispatched"
+    assert len(closures) > 0, "Expected GateClosureEvent events to be dispatched"
+
+    # Every warned product must also produce a closure.
+    warned_products = {e.product_id for e in warnings}
+    closed_products = {e.product_id for e in closures}
+    assert warned_products <= closed_products, "Got warnings for products that never closed"
+
+    # Each warning must carry a positive remaining timedelta.
+    for w in warnings:
+        assert isinstance(w, GateClosureWarning)
+        assert w.remaining.total_seconds() > 0
+
+    # Every warning must appear before its corresponding closure in the stream.
+    for w in warnings:
+        warning_idx = received.index(w)
+        closure = next(e for e in closures if e.product_id == w.product_id)
+        closure_idx = received.index(closure)
+        assert warning_idx < closure_idx, (
+            f"GateClosureWarning for {w.product_id} arrived after GateClosureEvent"
+        )
