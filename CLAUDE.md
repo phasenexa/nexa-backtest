@@ -385,3 +385,4 @@ A feature is complete when:
 6. If the feature adds a new algo hook or TradingContext method, the
    protocol in context.py is updated and all three engine implementations
    (backtest, paper, live) are updated or stubbed
+7. README.md is up-to-date and accurate
