@@ -23,7 +23,7 @@ import textwrap
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import pyarrow as pa
@@ -1121,3 +1121,80 @@ class TestDiscoverSignals:
         )
         with pytest.raises(DataError, match="Signal"):
             engine.run()
+
+
+# ---------------------------------------------------------------------------
+# Lines 698, 702-705, 738: IDC engine None handling and exception handling
+# ---------------------------------------------------------------------------
+
+
+class _TrackErrorAlgo(SimpleAlgo):
+    """Records any errors passed to on_error."""
+
+    error_log: ClassVar[list[Exception]] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        _TrackErrorAlgo.error_log = []
+
+    def on_error(self, ctx: TradingContext, exc: Exception) -> None:
+        _TrackErrorAlgo.error_log.append(exc)
+
+
+class TestIDCEngineExceptionHandling:
+    """Lines 702-705: Exceptions in IDC event processing are caught and logged."""
+
+    def test_idc_event_processing_exception_caught(self, tmp_path: Path) -> None:
+        """Lines 702-705: Exception in process_historical_event is caught."""
+        from unittest.mock import patch
+
+        _write_idc_data_dir(tmp_path)
+
+        # Patch process_historical_event to raise an exception
+        with patch(
+            "nexa_backtest.engines.matching.ContinuousMatchingEngine.process_historical_event",
+            side_effect=ValueError("Synthetic test error"),
+        ):
+            result = SharedReplayEngine(
+                algos={"tracker": _TrackErrorAlgo(), "noop": _NoOp()},
+                exchange="nordpool",
+                start=date(2026, 3, 1),
+                end=date(2026, 3, 1),
+                products=["NO1-QH"],
+                data_dir=tmp_path,
+                initial_capital=Decimal("100000"),
+            ).run()
+
+        # Engine should complete despite the exception
+        assert "tracker" in result.results
+        # on_error should have been called (at least once, but could be multiple times)
+        assert len(_TrackErrorAlgo.error_log) > 0
+        assert isinstance(_TrackErrorAlgo.error_log[0], ValueError)
+
+    def test_idc_shared_replay_with_none_engine(self, tmp_path: Path) -> None:
+        """Lines 698, 738: Runners with idc_engine=None are skipped gracefully."""
+        from nexa_backtest.signals.registry import SignalRegistry
+
+        _write_idc_data_dir(tmp_path)
+        engine = SharedReplayEngine(
+            algos={"buyer": _BuyIDCShared(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            initial_capital=Decimal("100000"),
+        )
+
+        # Build the engine state
+        zone = "NO1"
+        registry = SignalRegistry()
+        runners = engine._build_runners(zone, registry)
+
+        # Manually set one runner's idc_engine to None to test the defensive continue
+        runners[0].idc_engine = None
+
+        # Run IDC shared replay — should complete without crashing
+        # even though one runner has idc_engine=None
+        peak_memory = engine._run_idc_shared(zone, registry, runners)
+        assert peak_memory >= 0
