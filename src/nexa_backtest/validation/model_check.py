@@ -58,6 +58,7 @@ class ModelCheck:
             return StepResult(name=step_name, status="skip", duration_ms=0)
 
         messages: list[str] = []
+        failed = False
 
         if algo_calls_predict and models is None:
             elapsed = int((time.monotonic() - start) * 1000)
@@ -72,6 +73,7 @@ class ModelCheck:
 
             for ref_name in sorted(referenced_names):
                 if ref_name not in registered:
+                    failed = True
                     messages.append(
                         f"ctx.predict('{ref_name}', ...) found in source but '{ref_name}' "
                         f"is not registered. Registered models: {sorted(registered) or '(none)'}."
@@ -86,13 +88,16 @@ class ModelCheck:
                         detail += f", outputs: {result.actual_outputs}"
                     messages.append(detail)
                 else:
+                    failed = True
                     messages.append(f"  {result.model_name}: FAILED — {result.error}")
 
         elapsed = int((time.monotonic() - start) * 1000)
-
-        failed = any(m.startswith("ctx.predict") or "FAILED" in m for m in messages)
-        status = "fail" if failed else "pass"
-        return StepResult(name=step_name, status=status, messages=messages, duration_ms=elapsed)
+        return StepResult(
+            name=step_name,
+            status="fail" if failed else "pass",
+            messages=messages,
+            duration_ms=elapsed,
+        )
 
 
 def _find_predict_calls(source: str) -> list[str]:
@@ -112,7 +117,7 @@ def _find_predict_calls(source: str) -> list[str]:
     except SyntaxError:
         return []
 
-    names: list[str] = []
+    names: dict[str, None] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -129,8 +134,6 @@ def _find_predict_calls(source: str) -> list[str]:
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
         ):
-            name = node.args[0].value
-            if name not in names:
-                names.append(name)
+            names[node.args[0].value] = None
 
-    return names
+    return list(names)

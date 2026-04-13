@@ -124,14 +124,15 @@ class SklearnModel:
         )
 
         try:
-            import joblib  # type: ignore[import-untyped]
+            try:
+                import joblib  # type: ignore[import-untyped]
 
-            self._model = joblib.load(str(self._path))
-        except ImportError:
-            import pickle
+                self._model = joblib.load(str(self._path))
+            except ImportError:
+                import pickle
 
-            with open(self._path, "rb") as fh:
-                self._model = pickle.load(fh)
+                with open(self._path, "rb") as fh:
+                    self._model = pickle.load(fh)
         except Exception as exc:
             raise ModelLoadError(
                 f"Failed to load scikit-learn model '{self._name}' from '{self._path}': {exc}"
@@ -241,7 +242,7 @@ class SklearnModel:
         start = time.monotonic()
         try:
             model = self._load()
-        except (ModelLoadError, Exception) as exc:
+        except Exception as exc:
             elapsed = int((time.monotonic() - start) * 1000)
             return ModelValidationResult(
                 model_name=self._name,
