@@ -106,8 +106,8 @@ def compute_sharpe(equity_snapshots: list[EquitySnapshot]) -> Decimal | None:
         equity_snapshots: Chronological list of equity snapshots.
 
     Returns:
-        Annualised Sharpe ratio, or ``None`` if fewer than two snapshots
-        (impossible to compute a standard deviation).
+        Annualised Sharpe ratio, or ``None`` if fewer than three snapshots
+        (need at least two return observations to compute a standard deviation).
     """
     if len(equity_snapshots) < 2:
         return None
@@ -115,7 +115,7 @@ def compute_sharpe(equity_snapshots: list[EquitySnapshot]) -> Decimal | None:
     equities = np.array([float(s.total_equity) for s in equity_snapshots])
     returns = np.diff(equities) / equities[:-1]
 
-    if len(returns) < 1:
+    if len(returns) < 2:
         return None
 
     std_ret = float(np.std(returns, ddof=1))
