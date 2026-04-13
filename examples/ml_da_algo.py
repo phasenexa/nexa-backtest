@@ -15,7 +15,7 @@ Prerequisites (install the dev extras)::
 
 Run::
 
-    python examples/ml_da_algo.py --data-dir ./data/nordpool \\
+    python python examples/ml_da_algo.py --data-dir tests/fixtures \\
         --start 2026-03-01 --end 2026-03-31 --zone NO1
 
 The script will train a model from the DA price history in the Parquet
@@ -215,15 +215,15 @@ def run_backtests(
             return "N/A"
         return f"{float(val):>14.2f}"  # type: ignore[arg-type]
 
-    print(f"{'Realised PnL (EUR)':<30} {_fmt(naive_result.pnl.realised_pnl)} {_fmt(model_result.pnl.realised_pnl)}")
-    print(f"{'vs VWAP (EUR/MWh)':<30} {_fmt(naive_result.pnl.vs_vwap_eur_mwh)} {_fmt(model_result.pnl.vs_vwap_eur_mwh)}")
+    print(f"{'Total Alpha (EUR)':<30} {_fmt(naive_result.pnl.total_alpha_eur)} {_fmt(model_result.pnl.total_alpha_eur)}")
+    print(f"{'Market VWAP (EUR/MWh)':<30} {_fmt(naive_result.pnl.market_vwap)} {_fmt(model_result.pnl.market_vwap)}")
     print(f"{'Fills':<30} {len(naive_result.fills):>14} {len(model_result.fills):>14}")
     print(f"{'Sharpe Ratio':<30} {_fmt(naive_result.sharpe_ratio)} {_fmt(model_result.sharpe_ratio)}")
     print(f"{'Max Drawdown (EUR)':<30} {_fmt(naive_result.max_drawdown)} {_fmt(model_result.max_drawdown)}")
     print("=" * 60)
 
-    naive_pnl = float(naive_result.pnl.realised_pnl or 0)
-    model_pnl = float(model_result.pnl.realised_pnl or 0)
+    naive_pnl = float(naive_result.pnl.total_alpha_eur or 0)
+    model_pnl = float(model_result.pnl.total_alpha_eur or 0)
     if model_pnl > naive_pnl:
         print(f"\n✓ Model-driven algo outperformed naive by {model_pnl - naive_pnl:.2f} EUR")
     else:
