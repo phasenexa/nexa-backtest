@@ -10,6 +10,10 @@ from nexa_backtest.exceptions import (
     DataError,
     ExchangeError,
     MatchingError,
+    ModelInferenceError,
+    ModelInputError,
+    ModelLoadError,
+    ModelNotFoundError,
     NexaBacktestError,
     SignalError,
     UnsupportedFeatureError,
@@ -17,6 +21,10 @@ from nexa_backtest.exceptions import (
 )
 from nexa_backtest.exchanges.epex_spot import EpexSpotAdapter
 from nexa_backtest.exchanges.nordpool import NordPoolAdapter
+from nexa_backtest.models.base import ModelProvider, ModelValidationResult
+from nexa_backtest.models.onnx import ONNXModel
+from nexa_backtest.models.registry import ModelRegistry
+from nexa_backtest.models.sklearn import SklearnModel
 from nexa_backtest.signals.base import SignalProvider, SignalSchema
 from nexa_backtest.signals.csv_loader import CsvSignalProvider
 from nexa_backtest.signals.registry import SignalRegistry
@@ -71,8 +79,16 @@ __all__ = [
     "MarketDataUpdate",
     "MarketEvent",
     "MatchingError",
+    "ModelInferenceError",
+    "ModelInputError",
+    "ModelLoadError",
+    "ModelNotFoundError",
+    "ModelProvider",
+    "ModelRegistry",
+    "ModelValidationResult",
     "NexaBacktestError",
     "NordPoolAdapter",
+    "ONNXModel",
     "Order",
     "OrderBook",
     "OrderResult",
@@ -87,6 +103,7 @@ __all__ = [
     "SignalUpdate",
     "SignalValue",
     "SimpleAlgo",
+    "SklearnModel",
     "TradingContext",
     "UnsupportedFeatureError",
     "ValidationError",

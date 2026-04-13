@@ -597,9 +597,12 @@ class TestBacktestContextPositions:
 
 
 class TestBacktestContextMisc:
-    def test_predict_raises_not_implemented(self) -> None:
+    def test_predict_raises_model_not_found_without_registry(self) -> None:
+        """predict() raises ModelNotFoundError (not NotImplementedError) when no registry given."""
+        from nexa_backtest.exceptions import ModelNotFoundError
+
         ctx = _make_context()
-        with pytest.raises(NotImplementedError, match="ML model"):
+        with pytest.raises(ModelNotFoundError, match="ModelRegistry"):
             ctx.predict("some_model", {})
 
     def test_log_does_not_raise(self) -> None:
