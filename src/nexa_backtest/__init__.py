@@ -5,6 +5,7 @@ from nexa_backtest.algo import SimpleAlgo, algo
 from nexa_backtest.analysis.metrics import BacktestResult, DailyPnL
 from nexa_backtest.context import SignalValue, TradingContext
 from nexa_backtest.engines.backtest import BacktestEngine
+from nexa_backtest.engines.shared import ComparisonResult, SharedReplayEngine
 from nexa_backtest.exceptions import (
     AlgoError,
     DataError,
@@ -63,6 +64,7 @@ __all__ = [
     "BarEvent",
     "CancelEvent",
     "CancelResult",
+    "ComparisonResult",
     "CsvSignalProvider",
     "DailyPnL",
     "DataError",
@@ -95,6 +97,7 @@ __all__ = [
     "OrderStatus",
     "Position",
     "PriceLevel",
+    "SharedReplayEngine",
     "Side",
     "SignalError",
     "SignalProvider",

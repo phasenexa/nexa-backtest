@@ -30,6 +30,7 @@ import click
 from nexa_backtest.algo import SimpleAlgo
 from nexa_backtest.cli.validate import validate_command
 from nexa_backtest.engines.backtest import BacktestEngine
+from nexa_backtest.engines.shared import MAX_ALGOS, SharedReplayEngine
 from nexa_backtest.exceptions import AlgoError, NexaBacktestError
 from nexa_backtest.models.registry import ModelRegistry
 
@@ -192,6 +193,142 @@ def run_command(
                 click.echo(f"Parquet export written to: {output}/")
         except Exception as exc:
             raise click.ClickException(f"Failed to write output to '{output}': {exc}") from exc
+
+
+@cli.command("compare")
+@click.argument("algo_specs", nargs=-1, required=True)
+@click.option("--exchange", required=True, help="Exchange identifier, e.g. 'nordpool'.")
+@click.option(
+    "--start",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="First delivery date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Last delivery date inclusive (YYYY-MM-DD).",
+)
+@click.option(
+    "--products",
+    required=True,
+    multiple=True,
+    help="Product spec, e.g. 'NO1_DA'. Repeat for multiple products.",
+)
+@click.option(
+    "--data-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help="Directory containing market data files.",
+)
+@click.option(
+    "--capital",
+    default=100_000.0,
+    show_default=True,
+    help="Starting capital in EUR (applied equally to all algos).",
+)
+@click.option(
+    "--output",
+    default=None,
+    help=(
+        "Write comparison report to this file path. Format is inferred from the "
+        "extension: .html (HTML report) or .json (JSON export). "
+        "Summary is always printed to stdout."
+    ),
+)
+def compare_command(
+    algo_specs: tuple[str, ...],
+    exchange: str,
+    start: datetime,
+    end: datetime,
+    products: tuple[str, ...],
+    data_dir: str,
+    capital: float,
+    output: str | None,
+) -> None:
+    """Run multiple algos against the same data and compare results.
+
+    ALGO_SPECS are algo file paths, optionally prefixed with a display name:
+
+    \b
+        nexa compare conservative:algos/conservative.py aggressive:algos/aggressive.py \\
+            --exchange nordpool --start 2026-03-01 --end 2026-03-31 \\
+            --products NO1_DA --data-dir ./data
+
+    If no display name is given (just a path), the filename without extension
+    is used as the display name.  Maximum 8 algos.
+    """
+    if len(algo_specs) > MAX_ALGOS:
+        raise click.ClickException(
+            f"Too many algos: got {len(algo_specs)}, maximum is {MAX_ALGOS}.  "
+            "More than that makes the comparison report unreadable."
+        )
+    if len(algo_specs) < 2:
+        raise click.ClickException("At least 2 algo specs are required for a comparison.")
+
+    algos: dict[str, Any] = {}
+    for spec in algo_specs:
+        if ":" in spec:
+            display_name, _, algo_path = spec.partition(":")
+        else:
+            algo_path = spec
+            display_name = Path(algo_path).stem
+
+        if display_name in algos:
+            raise click.ClickException(
+                f"Duplicate display name '{display_name}'.  "
+                "Use 'name:path' format to provide unique names."
+            )
+
+        try:
+            algo_or_class = _load_algo(algo_path)
+        except (NexaBacktestError, AlgoError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        algo = algo_or_class() if isinstance(algo_or_class, type) else algo_or_class
+        algos[display_name] = algo
+
+    engine = SharedReplayEngine(
+        algos=algos,
+        exchange=exchange,
+        start=start.date(),
+        end=end.date(),
+        products=list(products),
+        data_dir=Path(data_dir),
+        initial_capital=Decimal(str(capital)),
+    )
+
+    try:
+        comparison = engine.run()
+    except NexaBacktestError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except Exception as exc:
+        raise click.ClickException(f"Unexpected error during comparison: {exc}") from exc
+
+    click.echo(comparison.summary())
+
+    if output is not None:
+        output_path = Path(output)
+        suffix = output_path.suffix.lower()
+        try:
+            if suffix == ".html":
+                comparison.to_html(output)
+                click.echo(f"HTML comparison report written to: {output}")
+            elif suffix == ".json":
+                comparison.to_json(output)
+                click.echo(f"JSON comparison export written to: {output}")
+            else:
+                raise click.ClickException(
+                    f"Unsupported output format '{suffix}'.  "
+                    "Use .html or .json for comparison reports."
+                )
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            raise click.ClickException(
+                f"Failed to write comparison output to '{output}': {exc}"
+            ) from exc
 
 
 # ------------------------------------------------------------------

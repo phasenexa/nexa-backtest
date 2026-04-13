@@ -25,6 +25,7 @@ nexa-backtest is purpose-built for this. It replays historical market conditions
 - **ML model integration.** Register ONNX or scikit-learn models and call `ctx.predict()` from your algo.
 - **Exchange adapters.** Nord Pool, EPEX SPOT, EEX. Each adapter declares its capabilities. Use block bids on an exchange that doesn't support them? The validator catches it before you run.
 - **Efficient replay.** DA data loads entirely (it's tiny). IDC data uses windowed replay via PyArrow row groups, keeping peak memory at 200-500 MB regardless of replay period.
+- **Multi-algo comparison.** Run up to 8 strategies against the same data in one pass. Market data loaded once, algos advance in lockstep. Compare by PnL, Sharpe, profit factor, win rate. Export as HTML or JSON.
 
 ## Installation
 
@@ -50,6 +51,7 @@ Work through the notebooks in order — each builds on the previous:
 | Notebook | Covers |
 |---|---|
 | [Backtester walkthrough notebook](notebooks/01-backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
+| [Multi-algo comparison](notebooks/07-multi_algo_comparison_walkthrough.ipynb) | `SharedReplayEngine`, `ComparisonResult`, ranking, HTML/JSON export |
 | [Remaining notebooks](notebooks/) | Other tutorials and guides in order |
 
 ```bash
@@ -336,7 +338,61 @@ prediction = ctx.predict("price_predictor", {
 
 ONNX is recommended (portable, fast, no arbitrary code execution). Scikit-learn pickle is supported but flagged as a security risk in hosted environments.
 
-## Validation
+## Multi-Algo Comparison
+
+Run multiple strategies against the same historical data in one pass with `SharedReplayEngine`:
+
+```python
+from nexa_backtest.engines.shared import SharedReplayEngine
+
+comparison = SharedReplayEngine(
+    algos={
+        "conservative": ConservativeAlgo(),  # threshold=8 EUR/MWh
+        "moderate": ModerateAlgo(),           # threshold=5 EUR/MWh
+        "aggressive": AggressiveAlgo(),       # threshold=0.1 EUR/MWh
+    },
+    exchange="nordpool",
+    start=date(2026, 3, 1),
+    end=date(2026, 3, 31),
+    products=["NO1_DA"],
+    data_dir=Path("./data"),
+    initial_capital=Decimal("100000"),
+).run()
+
+print(comparison.summary())
+# ================================================================================
+#   Comparison Results: 2026-03-01 to 2026-03-31 (31 days)
+#   Exchange: nordpool | Products: NO1_DA
+# ================================================================================
+#
+#                     conservative          moderate        aggressive
+#   Total PnL          +106,857 EUR      +103,261 EUR       +84,389 EUR
+#   Sharpe                    47.63             47.19             34.01
+#   Profit Factor             14.51              7.64              3.19
+#   Trades                     1480              1733              2168
+#
+#   Best by PnL: conservative (+106,857.05 EUR)
+#   Best risk-adjusted: conservative (Sharpe 47.63)
+
+# Rank by any metric
+comparison.ranking("total_pnl")   # ["conservative", "moderate", "aggressive"]
+comparison.ranking("sharpe_ratio")
+
+# Access individual results
+result = comparison.results["conservative"]  # BacktestResult
+
+# Export
+comparison.to_html("reports/comparison.html")   # self-contained HTML with Plotly charts
+comparison.to_json("reports/comparison.json")   # machine-readable
+```
+
+**Memory efficiency:** DA data is loaded once regardless of the number of algos. For IDC data, a single `SlidingWindow` is advanced in lockstep — 8 algos use the same memory as 1. Estimated memory savings vs. separate backtests are reported in `comparison.summary()`.
+
+**Maximum 8 algos per run.** More than that makes the comparison report unreadable.
+
+See `examples/multi_algo_comparison.py` and [notebook 07](notebooks/07-multi_algo_comparison_walkthrough.ipynb) for a full walkthrough.
+
+
 
 Catch bugs before they cost you a 10-minute backtest run:
 
@@ -422,6 +478,14 @@ nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
 nexa run my_algo.py --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
     --products NO1-QH
 
+# Compare multiple strategies in one pass (uses SharedReplayEngine)
+nexa compare \
+    conservative:algos/conservative.py \
+    aggressive:algos/aggressive.py \
+    --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
+    --products NO1_DA --data-dir ./data \
+    --output reports/comparison.html   # .html or .json
+
 nexa validate my_algo.py --exchange nordpool
 nexa compile my_algo.py --output my_algo.so
 ```
@@ -466,10 +530,12 @@ nexa-backtest integrates with the wider Phase Nexa toolkit:
 | EPEX SPOT adapter | Done (Task 05) |
 | Gate closure NOP tracking | Done (Task 05) |
 | Validation pipeline (`nexa validate`) | Done (Task 06) |
+| ML model registry (ONNX + sklearn) | Done (Task 07) |
+| Multi-algo shared replay (`SharedReplayEngine`) | Done (Task 08) |
+| Comparison report (HTML + JSON) | Done (Task 08) |
+| `nexa compare` CLI command | Done (Task 08) |
 | Built-in signal providers | Planned (Stage 2) |
 | EEX adapter | Planned (Stage 2) |
-| ML model registry | Planned (Stage 3) |
-| Multi-algo replay | Planned (Stage 3) |
 | Paper trading engine | Planned (Stage 4) |
 | Live trading engine | Planned (Stage 4) |
 | Code compilation | Planned (Stage 4) |
