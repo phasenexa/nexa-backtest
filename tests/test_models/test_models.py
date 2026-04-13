@@ -873,3 +873,246 @@ class TestFixtureGenerator:
         }
         result = session.run(None, inputs)
         assert abs(result[0][0][0] - 66.0) < 0.1
+
+
+# ===========================================================================
+# Coverage gap: SklearnModel uncovered branches
+# ===========================================================================
+
+
+class TestSklearnModelCoverageGaps:
+    def test_output_schema_property(self, tmp_path: Path) -> None:
+        pkl_path, _ = _make_sklearn_model(tmp_path)
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float, "y": float},
+            output_schema={"prediction": float},
+            feature_order=["x", "y"],
+        )
+        assert model.output_schema == {"prediction": float}
+
+    def test_pickle_fallback_when_joblib_unavailable(self, tmp_path: Path) -> None:
+        """Uses pickle directly when joblib is not installed."""
+        import sys
+        import unittest.mock
+
+        pkl_path, _ = _make_sklearn_model(tmp_path)
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float, "y": float},
+            output_schema={"prediction": float},
+            feature_order=["x", "y"],
+        )
+        with unittest.mock.patch.dict(sys.modules, {"joblib": None}), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.predict({"x": 1.0, "y": 2.0})
+        assert "prediction" in result
+
+    def test_load_raises_model_load_error_on_corrupt_file(self, tmp_path: Path) -> None:
+        """ModelLoadError is raised when the file exists but cannot be unpickled."""
+        corrupt = tmp_path / "corrupt.pkl"
+        corrupt.write_bytes(b"this is not a pickle file")
+
+        model = SklearnModel(
+            name="sk",
+            path=corrupt,
+            input_schema={},
+            output_schema={},
+            feature_order=[],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ModelLoadError, match="Failed to load"):
+                model.predict({})
+
+    def test_predict_raises_inference_error_on_model_failure(self, tmp_path: Path) -> None:
+        """ModelInferenceError is raised when the underlying model.predict() raises."""
+        import unittest.mock
+
+        from nexa_backtest.exceptions import ModelInferenceError
+
+        pkl_path, _ = _make_sklearn_model(tmp_path)
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float, "y": float},
+            output_schema={"pred": float},
+            feature_order=["x", "y"],
+        )
+        mock_underlying = unittest.mock.MagicMock()
+        mock_underlying.predict.side_effect = RuntimeError("exploded")
+        with (
+            unittest.mock.patch.object(model, "_load", return_value=mock_underlying),
+            pytest.raises(ModelInferenceError, match="exploded"),
+        ):
+            model.predict({"x": 1.0, "y": 2.0})
+
+    def test_predict_proba_included_when_available(self, tmp_path: Path) -> None:
+        """predict_proba result is included in output when model supports it and schema has 2+
+        keys."""
+        import unittest.mock
+
+        proba_array = np.array([[0.3, 0.7]])
+        mock_underlying = unittest.mock.MagicMock()
+        mock_underlying.predict.return_value = np.array([1])
+        mock_underlying.predict_proba.return_value = proba_array
+
+        pkl_path, _ = _make_sklearn_model(tmp_path)
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float, "y": float},
+            output_schema={"label": float, "proba": float},
+            feature_order=["x", "y"],
+        )
+        with unittest.mock.patch.object(model, "_load", return_value=mock_underlying):
+            result = model.predict({"x": 1.0, "y": 2.0})
+
+        assert "label" in result
+        assert "proba" in result
+        assert result["proba"] == [0.3, 0.7]
+
+    def test_predict_proba_exception_swallowed(self, tmp_path: Path) -> None:
+        """predict_proba errors are silently ignored (best-effort)."""
+        import unittest.mock
+
+        mock_underlying = unittest.mock.MagicMock()
+        mock_underlying.predict.return_value = np.array([1])
+        mock_underlying.predict_proba.side_effect = RuntimeError("proba broken")
+
+        pkl_path, _ = _make_sklearn_model(tmp_path)
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float, "y": float},
+            output_schema={"label": float, "proba": float},
+            feature_order=["x", "y"],
+        )
+        with unittest.mock.patch.object(model, "_load", return_value=mock_underlying):
+            result = model.predict({"x": 1.0, "y": 2.0})
+
+        assert "label" in result
+        assert "proba" not in result
+
+    def test_validate_fails_when_loaded_object_has_no_predict(self, tmp_path: Path) -> None:
+        """validate() returns invalid when the pickled object has no predict() method."""
+        import pickle
+
+        pkl_path = tmp_path / "no_predict.pkl"
+        with open(pkl_path, "wb") as fh:
+            pickle.dump({"not": "a model"}, fh)
+
+        model = SklearnModel(
+            name="sk",
+            path=pkl_path,
+            input_schema={"x": float},
+            output_schema={"pred": float},
+            feature_order=["x"],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.validate()
+
+        assert result.valid is False
+        assert "predict" in (result.error or "").lower()
+
+
+# ===========================================================================
+# Coverage gap: ONNXModel uncovered branches
+# ===========================================================================
+
+
+class TestONNXModelCoverageGaps:
+    def test_load_raises_when_onnxruntime_not_installed(self, tmp_path: Path) -> None:
+        """ModelLoadError raised with install hint when onnxruntime is missing."""
+        import sys
+        import unittest.mock
+
+        dummy_onnx = tmp_path / "dummy.onnx"
+        dummy_onnx.write_bytes(b"not real onnx")
+
+        model = ONNXModel("m", dummy_onnx, {}, {})
+        with unittest.mock.patch.dict(sys.modules, {"onnxruntime": None}):
+            model._session = None
+            with pytest.raises(ModelLoadError, match="onnxruntime"):
+                model._load()
+
+    def test_load_raises_on_corrupt_onnx_file(self, tmp_path: Path) -> None:
+        """ModelLoadError raised when the ONNX file exists but is not a valid model."""
+        corrupt_onnx = tmp_path / "corrupt.onnx"
+        corrupt_onnx.write_bytes(b"this is not a valid onnx model")
+
+        model = ONNXModel("m", corrupt_onnx, {}, {})
+        with pytest.raises(ModelLoadError, match="Failed to load"):
+            model._load()
+
+    def test_predict_raises_inference_error_on_session_failure(self) -> None:
+        """ModelInferenceError is raised when session.run() raises."""
+        import unittest.mock
+
+        from nexa_backtest.exceptions import ModelInferenceError
+
+        model = ONNXModel("m", ONNX_FIXTURE, FIXTURE_INPUT_SCHEMA, FIXTURE_OUTPUT_SCHEMA)
+        mock_session = unittest.mock.MagicMock()
+        mock_session.run.side_effect = RuntimeError("inference exploded")
+        model._session = mock_session
+
+        with pytest.raises(ModelInferenceError, match="inference exploded"):
+            model.predict(FIXTURE_FEATURES)
+
+    def test_build_inputs_int_type(self) -> None:
+        """Integer features are converted to np.int64 arrays."""
+        model = ONNXModel(
+            "m",
+            ONNX_FIXTURE,
+            {"hour": int, "wind": float},
+            FIXTURE_OUTPUT_SCHEMA,
+        )
+        inputs = model._build_inputs({"hour": 12, "wind": 3000.0})
+        assert inputs["hour"].dtype == np.int64
+        assert inputs["wind"].dtype == np.float32
+
+
+# ===========================================================================
+# Coverage gap: _find_predict_calls uncovered branches
+# ===========================================================================
+
+
+class TestFindPredictCalls:
+    def test_syntax_error_returns_empty_list(self) -> None:
+        """SyntaxError in source returns an empty list rather than raising."""
+        from nexa_backtest.validation.model_check import _find_predict_calls
+
+        result = _find_predict_calls("def broken(: pass")
+        assert result == []
+
+    def test_non_ctx_predict_calls_ignored(self) -> None:
+        """Call nodes that don't match ctx.predict() pattern are skipped."""
+        from nexa_backtest.validation.model_check import _find_predict_calls
+
+        source = (
+            "def setup():\n"
+            "    other.predict('model_name')\n"  # wrong receiver
+            "    ctx.fit('model_name')\n"  # wrong method
+            "    predict('model_name')\n"  # not a method call
+        )
+        result = _find_predict_calls(source)
+        assert result == []
+
+    def test_ctx_predict_no_args_not_collected(self) -> None:
+        """ctx.predict() with no arguments does not add anything to the result."""
+        from nexa_backtest.validation.model_check import _find_predict_calls
+
+        source = "ctx.predict()\n"
+        result = _find_predict_calls(source)
+        assert result == []
+
+    def test_ctx_predict_non_string_first_arg_not_collected(self) -> None:
+        """ctx.predict() with a non-string first arg (e.g. a variable) is not collected."""
+        from nexa_backtest.validation.model_check import _find_predict_calls
+
+        source = "ctx.predict(model_name, {})\n"
+        result = _find_predict_calls(source)
+        assert result == []
