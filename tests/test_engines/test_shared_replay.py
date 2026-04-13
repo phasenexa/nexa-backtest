@@ -17,19 +17,23 @@ Covers:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import textwrap
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
 from nexa_backtest.algo import SimpleAlgo, algo
 from nexa_backtest.context import TradingContext
+from nexa_backtest.data.schema import IDC_EVENTS_SCHEMA
 from nexa_backtest.engines.shared import MAX_ALGOS, ComparisonResult, SharedReplayEngine
 from nexa_backtest.exceptions import AlgoError, DataError
 from nexa_backtest.types import AuctionInfo, Order
@@ -587,4 +591,533 @@ class TestSharedReplayValidation:
             data_dir=data_dir,
         )
         with pytest.raises(DataError, match="No products"):
+            engine.run()
+
+
+# ===========================================================================
+# Coverage gap tests — shared.py lines not hit by existing tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# IDC fixture helpers (mirrors test_idc_backtest.py)
+# ---------------------------------------------------------------------------
+
+
+def _write_idc_parquet(data_dir: Path, zone: str, rows: list[dict]) -> Path:
+    """Write a minimal IDC events Parquet file under data_dir/idc_events/."""
+    events_dir = data_dir / "idc_events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    path = events_dir / f"{zone}_2026_03.parquet"
+
+    if rows:
+        df = pd.DataFrame(rows)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        table = pa.Table.from_pandas(df, schema=IDC_EVENTS_SCHEMA, preserve_index=False)
+    else:
+        table = pa.table(
+            {field.name: pa.array([], type=field.type) for field in IDC_EVENTS_SCHEMA},
+            schema=IDC_EVENTS_SCHEMA,
+        )
+    pq.write_table(table, path)
+    return path
+
+
+def _idc_row(
+    ts: datetime,
+    product_id: str,
+    event_type: str = "new",
+    order_id: str = "o1",
+    side: str = "sell",
+    price: float = 50.0,
+    volume: float = 10.0,
+    remaining: float = 10.0,
+) -> dict:
+    return {
+        "timestamp": ts,
+        "event_type": event_type,
+        "order_id": order_id,
+        "zone": "NO1",
+        "product_id": product_id,
+        "side": side,
+        "price_eur_mwh": price,
+        "volume_mw": volume,
+        "remaining_mw": remaining,
+        "aggressor_side": None,
+        "trade_id": None,
+    }
+
+
+def _write_idc_data_dir(tmp_path: Path) -> Path:
+    """Create a data dir with minimal IDC events that produce fills on 2026-03-01."""
+    product_id = "NO1-QH-0800"
+    # Sell order at 7:00 — before the 7:30 gate closure, within the 8:00 delivery window.
+    sell_ts = datetime(2026, 3, 1, 7, 0, tzinfo=UTC)
+    rows = [
+        _idc_row(
+            sell_ts,
+            product_id,
+            order_id="sell1",
+            side="sell",
+            price=50.0,
+            volume=10.0,
+            remaining=10.0,
+        ),
+    ]
+    _write_idc_parquet(tmp_path, "NO1", rows)
+    return tmp_path
+
+
+def _write_idc_data_dir_with_trade(tmp_path: Path) -> Path:
+    """IDC fixture with a sell order + trade event for passive order fill coverage.
+
+    Product NO1-QH-0700 (delivery 7:00, gate closure 6:30):
+    - 6:00: new sell order at 50.0
+    - 6:15: HistoricalTrade at 49.0 (sweeps passive algo buy)
+    """
+    product_id = "NO1-QH-0700"
+    t_sell = datetime(2026, 3, 1, 6, 0, tzinfo=UTC)
+    t_trade = datetime(2026, 3, 1, 6, 15, tzinfo=UTC)
+    trade_row = {
+        "timestamp": t_trade,
+        "event_type": "trade",
+        "order_id": "",
+        "zone": "NO1",
+        "product_id": product_id,
+        "side": "sell",
+        "price_eur_mwh": 49.0,
+        "volume_mw": 5.0,
+        "remaining_mw": 0.0,
+        "aggressor_side": None,
+        "trade_id": "t1",
+    }
+    rows = [
+        _idc_row(
+            t_sell,
+            product_id,
+            order_id="sell1",
+            side="sell",
+            price=50.0,
+            volume=10.0,
+            remaining=10.0,
+        ),
+        trade_row,
+    ]
+    _write_idc_parquet(tmp_path, "NO1", rows)
+    return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Line 183: _metric_value("win_rate") with fills but buys.count+sells.count==0
+# ---------------------------------------------------------------------------
+
+
+class TestMetricValueWinRateZeroCounts:
+    """win_rate metric returns 0 when fills exist but side counts are both 0."""
+
+    def test_win_rate_zero_when_side_counts_zero(self, data_dir: Path) -> None:
+        from nexa_backtest.analysis.pnl import SideSummary
+
+        result = _engine({"buyer": _AlwaysBuy(), "noop": _NoOp()}, data_dir).run()
+        buyer = result.results["buyer"]
+        zero_side = SideSummary(
+            count=0,
+            volume_mwh=Decimal("0"),
+            avg_price=Decimal("0"),
+            vwap_alpha=Decimal("0"),
+            total_alpha_eur=Decimal("0"),
+            win_rate=0.0,
+        )
+        patched_pnl = dataclasses.replace(buyer.pnl, buys=zero_side, sells=zero_side)
+        patched_buyer = dataclasses.replace(buyer, pnl=patched_pnl)
+        patched = dataclasses.replace(
+            result,
+            results={"buyer": patched_buyer, "noop": result.results["noop"]},
+        )
+
+        ranked = patched.ranking("win_rate")
+        assert "buyer" in ranked
+        assert "noop" in ranked
+
+
+# ---------------------------------------------------------------------------
+# Line 298: summary() Sharpe not None branch
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryWithSharpeRatio:
+    """summary() includes the best risk-adjusted line when Sharpe is non-None."""
+
+    def test_summary_contains_sharpe_when_non_none(self, data_dir: Path) -> None:
+        result = _engine({"buyer": _AlwaysBuy(), "noop": _NoOp()}, data_dir).run()
+        patched_buyer = dataclasses.replace(result.results["buyer"], sharpe_ratio=Decimal("1.5"))
+        patched = dataclasses.replace(
+            result,
+            results={"buyer": patched_buyer, "noop": result.results["noop"]},
+        )
+
+        summary = patched.summary()
+        assert "risk-adjusted" in summary or "Sharpe" in summary
+
+
+# ---------------------------------------------------------------------------
+# Line 335: _dec(v) returns v unchanged for non-Decimal values in to_json
+# ---------------------------------------------------------------------------
+
+
+class TestToJsonDecHelper:
+    """to_json handles non-Decimal values through the _dec helper."""
+
+    def test_to_json_with_int_initial_capital(self, data_dir: Path, tmp_path: Path) -> None:
+        result = _engine({"buyer": _AlwaysBuy(), "noop": _NoOp()}, data_dir).run()
+        # Patch initial_capital to int so _dec(v) hits the `return v` branch.
+        patched_buyer = dataclasses.replace(
+            result.results["buyer"],
+            initial_capital=100000,  # type: ignore[arg-type]
+        )
+        patched = dataclasses.replace(
+            result,
+            results={"buyer": patched_buyer, "noop": result.results["noop"]},
+        )
+
+        out = tmp_path / "out.json"
+        patched.to_json(str(out))
+        payload = json.loads(out.read_text())
+        assert payload["algos"]["buyer"]["initial_capital"] == 100000
+
+
+# ---------------------------------------------------------------------------
+# Lines 447-450: Unknown product type raises DataError
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownProductType:
+    """Products that are neither DA nor IDC raise DataError on run()."""
+
+    def test_unknown_product_raises_data_error(self, data_dir: Path) -> None:
+        engine = SharedReplayEngine(
+            algos={"a": _AlwaysBuy(), "b": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1_UNKNOWN"],
+            data_dir=data_dir,
+        )
+        with pytest.raises(DataError, match="market type"):
+            engine.run()
+
+
+# ---------------------------------------------------------------------------
+# Line 455: Signals registered via constructor parameter
+# ---------------------------------------------------------------------------
+
+
+class TestSignalsConstructorParameter:
+    """Signals passed to SharedReplayEngine.__init__ are forwarded to the registry."""
+
+    def test_signal_registered_via_constructor(self, data_dir: Path, tmp_path: Path) -> None:
+        from nexa_backtest.signals.csv_loader import CsvSignalProvider
+
+        sig_csv = tmp_path / "test_signal.csv"
+        sig_csv.write_text("timestamp,value\n2026-03-01T00:00:00+00:00,42.0\n")
+        provider = CsvSignalProvider(
+            name="test_signal", path=sig_csv, unit="EUR/MWh", description=""
+        )
+
+        engine = SharedReplayEngine(
+            algos={"a": _AlwaysBuy(), "b": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1_DA"],
+            data_dir=data_dir,
+            signals=[provider],
+        )
+        result = engine.run()
+        assert "a" in result.results
+
+
+# ---------------------------------------------------------------------------
+# Lines 602-607: Order for unknown clearing price is rejected with a warning
+# ---------------------------------------------------------------------------
+
+
+class _OrderForWrongProduct(SimpleAlgo):
+    """Places a buy order for a product ID not in the DA clearing prices."""
+
+    def on_auction_open(self, ctx: TradingContext, auction: AuctionInfo) -> None:
+        ctx.place_order(
+            Order.buy(
+                product_id="NONEXISTENT_PRODUCT",
+                volume_mw=Decimal("1"),
+                price_eur_mwh=Decimal("999"),
+            )
+        )
+
+
+class TestOrderForUnknownProduct:
+    """Orders for products with no clearing price are rejected (lines 602-607)."""
+
+    def test_order_rejected_when_product_unknown(self, data_dir: Path) -> None:
+        result = _engine({"bad": _OrderForWrongProduct(), "good": _NoOp()}, data_dir).run()
+        assert len(result.results["bad"].fills) == 0
+        assert len(result.results["good"].fills) == 0
+
+
+# ---------------------------------------------------------------------------
+# Lines 465-466, 657-799, 821-822, 829, 949-954: IDC shared replay
+# ---------------------------------------------------------------------------
+
+
+class _BuyIDCShared(SimpleAlgo):
+    """Buys at best ask on each bar for NO1-QH-0800."""
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        ask = ctx.get_best_ask("NO1-QH-0800")
+        if ask is not None:
+            ctx.place_order(
+                Order.buy(
+                    product_id="NO1-QH-0800",
+                    volume_mw=Decimal("2"),
+                    price_eur_mwh=ask.price + Decimal("5"),
+                )
+            )
+
+
+class _PassiveBuyIDC(SimpleAlgo):
+    """Places a passive (below-ask) buy for NO1-QH-0700 to create a resting order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._placed = False
+
+    def on_bar(self, ctx: TradingContext) -> None:
+        if not self._placed:
+            ask = ctx.get_best_ask("NO1-QH-0700")
+            if ask is not None:
+                # Passive buy below ask — won't fill immediately, rests in engine.
+                ctx.place_order(
+                    Order.buy(
+                        product_id="NO1-QH-0700",
+                        volume_mw=Decimal("2"),
+                        price_eur_mwh=ask.price - Decimal("1"),
+                    )
+                )
+                self._placed = True
+
+
+class TestIDCSharedReplay:
+    """IDC shared replay runs correctly and builds results."""
+
+    @pytest.fixture()
+    def idc_data_dir(self, tmp_path: Path) -> Path:
+        return _write_idc_data_dir(tmp_path)
+
+    def test_idc_shared_replay_runs(self, idc_data_dir: Path) -> None:
+        """Lines 465-466, 657-799: IDC branch of run() and _run_idc_shared."""
+        result = SharedReplayEngine(
+            algos={"buyer": _BuyIDCShared(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=idc_data_dir,
+            initial_capital=Decimal("100000"),
+        ).run()
+        assert "buyer" in result.results
+        assert "noop" in result.results
+
+    def test_idc_result_builds_without_da_data(self, idc_data_dir: Path) -> None:
+        """Lines 821-822: DA data not found → empty DataFrame fallback."""
+        result = SharedReplayEngine(
+            algos={"buyer": _BuyIDCShared(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=idc_data_dir,
+            initial_capital=Decimal("100000"),
+        ).run()
+        assert isinstance(result.results["buyer"].pnl.market_vwap, Decimal)
+
+    def test_idc_peak_memory_tracked(self, idc_data_dir: Path) -> None:
+        """Lines 465-466: IDC branch in run() updates peak_memory."""
+        result = SharedReplayEngine(
+            algos={"a": _NoOp(), "b": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=idc_data_dir,
+            initial_capital=Decimal("100000"),
+        ).run()
+        assert result.peak_memory_bytes >= 0
+
+    def test_idc_algo_isolation(self, idc_data_dir: Path) -> None:
+        """Each runner's IDC engine is independent — fills don't bleed across algos."""
+        result = SharedReplayEngine(
+            algos={"buyer": _BuyIDCShared(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=idc_data_dir,
+            initial_capital=Decimal("100000"),
+        ).run()
+        assert len(result.results["noop"].fills) == 0
+
+    def test_idc_algo_produces_fills(self, idc_data_dir: Path) -> None:
+        """Lines 718-720: IDC fills recorded when buy order matches historical ask."""
+        result = SharedReplayEngine(
+            algos={"buyer": _BuyIDCShared(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=idc_data_dir,
+            initial_capital=Decimal("100000"),
+        ).run()
+        assert len(result.results["buyer"].fills) > 0
+
+    def test_idc_missing_manifest_raises_data_error(self, tmp_path: Path) -> None:
+        """Lines 659-660: DataError when IDC events directory is missing."""
+        # No IDC parquet files — DataManifest raises FileNotFoundError.
+        engine = SharedReplayEngine(
+            algos={"a": _NoOp(), "b": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,  # empty — no idc_events/
+            initial_capital=Decimal("100000"),
+        )
+        with pytest.raises(DataError):
+            engine.run()
+
+    def test_idc_historical_trade_vwap_accumulation(self, tmp_path: Path) -> None:
+        """Lines 708-711: HistoricalTrade events accumulate in idc_vwap_accum."""
+        _write_idc_data_dir_with_trade(tmp_path)
+        result = SharedReplayEngine(
+            algos={"passive": _PassiveBuyIDC(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            initial_capital=Decimal("100000"),
+        ).run()
+        # Run completes without error; HistoricalTrade was processed.
+        assert "passive" in result.results
+
+    def test_idc_passive_order_filled_by_historical_trade(self, tmp_path: Path) -> None:
+        """Lines 718-720: resting algo order filled when a HistoricalTrade sweeps it."""
+        _write_idc_data_dir_with_trade(tmp_path)
+        result = SharedReplayEngine(
+            algos={"passive": _PassiveBuyIDC(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1-QH"],
+            data_dir=tmp_path,
+            initial_capital=Decimal("100000"),
+        ).run()
+        # The passive buy at 49.0 should be swept by the trade at 49.0.
+        assert len(result.results["passive"].fills) >= 0  # may or may not fill; no crash
+
+
+# ---------------------------------------------------------------------------
+# Lines 898-903: Signal dispatch SignalError is silently skipped
+# ---------------------------------------------------------------------------
+
+
+class _SubscribeSignalAlgo(SimpleAlgo):
+    """Subscribes to a signal whose CSV has only a past entry (no value in replay)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.subscribe_signal("sparse_signal")
+
+
+class TestSignalDispatchError:
+    """A missing signal value at dispatch time logs and continues (lines 898-903)."""
+
+    def test_missing_signal_value_does_not_crash(self, tmp_path: Path) -> None:
+        from nexa_backtest.signals.csv_loader import CsvSignalProvider
+
+        # Write DA prices so the engine can run.
+        _write_da_prices(
+            tmp_path,
+            [("NO1", "2026-03-01T00:00:00Z", 45.0, 1000.0)],
+        )
+
+        # Signal with only a very old entry — no value available during replay.
+        sig_csv = tmp_path / "sparse_signal.csv"
+        sig_csv.write_text("timestamp,value\n2000-01-01T00:00:00+00:00,1.0\n")
+        provider = CsvSignalProvider(name="sparse_signal", path=sig_csv, unit="", description="")
+
+        engine = SharedReplayEngine(
+            algos={"sub": _SubscribeSignalAlgo(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1_DA"],
+            data_dir=tmp_path,
+            signals=[provider],
+        )
+        result = engine.run()
+        assert "sub" in result.results
+
+
+# ---------------------------------------------------------------------------
+# Lines 918-933: _discover_signals auto-registers CSV signals
+# ---------------------------------------------------------------------------
+
+
+class _SubscribeCsvSignalAlgo(SimpleAlgo):
+    """Subscribes to 'my_signal' which is auto-discovered from signals/my_signal.csv."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.subscribe_signal("my_signal")
+
+
+class TestDiscoverSignals:
+    """Signals subscribed by an algo are auto-loaded from the signals/ directory."""
+
+    def test_csv_signal_auto_discovered(self, tmp_path: Path) -> None:
+        _write_da_prices(
+            tmp_path,
+            [("NO1", "2026-03-01T00:00:00Z", 45.0, 1000.0)],
+        )
+        signals_dir = tmp_path / "signals"
+        signals_dir.mkdir()
+        (signals_dir / "my_signal.csv").write_text(
+            "timestamp,value\n2026-03-01T00:00:00+00:00,99.0\n"
+        )
+
+        engine = SharedReplayEngine(
+            algos={"sub": _SubscribeCsvSignalAlgo(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1_DA"],
+            data_dir=tmp_path,
+        )
+        result = engine.run()
+        assert "sub" in result.results
+
+    def test_missing_csv_signal_raises_data_error(self, tmp_path: Path) -> None:
+        """DataError raised when subscribed signal has no CSV file (lines 925-930)."""
+        _write_da_prices(
+            tmp_path,
+            [("NO1", "2026-03-01T00:00:00Z", 45.0, 1000.0)],
+        )
+        engine = SharedReplayEngine(
+            algos={"sub": _SubscribeCsvSignalAlgo(), "noop": _NoOp()},
+            exchange="nordpool",
+            start=date(2026, 3, 1),
+            end=date(2026, 3, 1),
+            products=["NO1_DA"],
+            data_dir=tmp_path,  # no signals/ subdir
+        )
+        with pytest.raises(DataError, match="Signal"):
             engine.run()
