@@ -905,10 +905,9 @@ class TestSklearnModelCoverageGaps:
             output_schema={"prediction": float},
             feature_order=["x", "y"],
         )
-        with unittest.mock.patch.dict(sys.modules, {"joblib": None}):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                result = model.predict({"x": 1.0, "y": 2.0})
+        with unittest.mock.patch.dict(sys.modules, {"joblib": None}), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.predict({"x": 1.0, "y": 2.0})
         assert "prediction" in result
 
     def test_load_raises_model_load_error_on_corrupt_file(self, tmp_path: Path) -> None:
@@ -944,12 +943,15 @@ class TestSklearnModelCoverageGaps:
         )
         mock_underlying = unittest.mock.MagicMock()
         mock_underlying.predict.side_effect = RuntimeError("exploded")
-        with unittest.mock.patch.object(model, "_load", return_value=mock_underlying):
-            with pytest.raises(ModelInferenceError, match="exploded"):
-                model.predict({"x": 1.0, "y": 2.0})
+        with (
+            unittest.mock.patch.object(model, "_load", return_value=mock_underlying),
+            pytest.raises(ModelInferenceError, match="exploded"),
+        ):
+            model.predict({"x": 1.0, "y": 2.0})
 
     def test_predict_proba_included_when_available(self, tmp_path: Path) -> None:
-        """predict_proba result is included in output when model supports it and schema has 2+ keys."""
+        """predict_proba result is included in output when model supports it and schema has 2+
+        keys."""
         import unittest.mock
 
         proba_array = np.array([[0.3, 0.7]])
