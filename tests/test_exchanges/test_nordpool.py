@@ -46,7 +46,7 @@ class TestIsIdcProduct:
 class TestNordPoolAdapterCapabilities:
     def test_zone_stored(self) -> None:
         adapter = NordPoolAdapter("NO1")
-        assert adapter._zone == "NO1"
+        assert adapter._area_id == "NO1"
 
     def test_capabilities_exchange_id(self) -> None:
         adapter = NordPoolAdapter("SE2")

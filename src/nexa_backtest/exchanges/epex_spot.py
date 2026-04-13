@@ -28,11 +28,10 @@ Supported EPEX areas (non-exhaustive)::
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
-from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities
-from nexa_backtest.types import CancelResult, Order, OrderBook, OrderResult
+from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities, _BaseExchangeAdapter
 
 # EPEX SPOT IDC gate closure offset (most products, not cross-border)
 EPEX_IDC_GATE_CLOSURE = timedelta(minutes=30)
@@ -48,7 +47,7 @@ EPEX_MAX_PRICE = Decimal("4000")
 EPEX_MIN_VOLUME = Decimal("0.1")
 
 
-class EpexSpotAdapter:
+class EpexSpotAdapter(_BaseExchangeAdapter):
     """Exchange adapter for EPEX SPOT (IDC and IDA).
 
     This is a stateless configuration object.  The backtest engine uses it to
@@ -62,8 +61,7 @@ class EpexSpotAdapter:
     """
 
     def __init__(self, area: str) -> None:
-        self._area = area
-        self._capabilities = ExchangeCapabilities(
+        capabilities = ExchangeCapabilities(
             exchange_id="epex_spot",
             supports_block_bids=True,
             supports_linked_orders=False,
@@ -76,73 +74,9 @@ class EpexSpotAdapter:
             mtu_duration_minutes=15,
             gate_closure_minutes_before_delivery=30,
         )
+        super().__init__(area, capabilities, "EPEX SPOT")
         self.supports_continuous_trading = True
         self.supports_auction_trading = True
-
-    @property
-    def capabilities(self) -> ExchangeCapabilities:
-        """Declare EPEX SPOT exchange capabilities.
-
-        Returns:
-            Frozen :class:`~nexa_backtest.exchanges.base.ExchangeCapabilities`.
-        """
-        return self._capabilities
-
-    def get_products(self) -> list[str]:
-        """Return all 96 quarter-hourly product IDs for this delivery area.
-
-        Products use the format ``{area}-QH-{HHMM}``, e.g.
-        ``DE-LU-QH-0900``.
-
-        Returns:
-            List of 96 product identifiers (00:00-23:45 UTC).
-        """
-        products: list[str] = []
-        for hour in range(24):
-            for minute in (0, 15, 30, 45):
-                products.append(f"{self._area}-QH-{hour:02d}{minute:02d}")
-        return products
-
-    def get_orderbook(self, product_id: str) -> OrderBook:
-        """Return an empty order book (maintained by the matching engine).
-
-        In backtesting the order book state is managed by the
-        :class:`~nexa_backtest.engines.matching.ContinuousMatchingEngine`.
-
-        Args:
-            product_id: Exchange product identifier.
-
-        Returns:
-            Empty :class:`~nexa_backtest.types.OrderBook`.
-        """
-        return OrderBook(
-            product_id=product_id,
-            bids=[],
-            asks=[],
-            timestamp=datetime.now(tz=UTC),
-        )
-
-    def submit_order(self, order: Order) -> OrderResult:
-        """Order submission is handled by the engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.  Use ``ctx.place_order()`` instead.
-        """
-        raise NotImplementedError(
-            "submit_order is not implemented on EpexSpotAdapter. "
-            "Use ctx.place_order() inside the algo."
-        )
-
-    def cancel_order(self, order_id: str) -> CancelResult:
-        """Order cancellation is handled by the engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.  Use ``ctx.cancel_order()`` instead.
-        """
-        raise NotImplementedError(
-            "cancel_order is not implemented on EpexSpotAdapter. "
-            "Use ctx.cancel_order() inside the algo."
-        )
 
     def gate_closure_offset(self, product_type: str = "IDC") -> timedelta:
         """Return the gate closure offset for a given product type.
@@ -156,35 +90,6 @@ class EpexSpotAdapter:
         if product_type in ("DA", "IDA"):
             return EPEX_DA_GATE_CLOSURE
         return EPEX_IDC_GATE_CLOSURE
-
-    def validate_order(self, order: Order) -> str | None:
-        """Validate an order against EPEX SPOT exchange rules.
-
-        Args:
-            order: The order to validate.
-
-        Returns:
-            Error message string if invalid, or ``None`` if valid.
-        """
-        if order.volume_mw < self._capabilities.min_volume_mw:
-            return (
-                f"Volume {order.volume_mw} MW below EPEX SPOT minimum "
-                f"{self._capabilities.min_volume_mw} MW."
-            )
-        if order.price_eur_mwh is not None:
-            if order.price_eur_mwh < self._capabilities.min_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh below EPEX SPOT minimum "
-                    f"{self._capabilities.min_price_eur_mwh} EUR/MWh."
-                )
-            if order.price_eur_mwh > self._capabilities.max_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh above EPEX SPOT maximum "
-                    f"{self._capabilities.max_price_eur_mwh} EUR/MWh."
-                )
-        if order.price_eur_mwh is None and not self._capabilities.supports_market_orders:
-            return "EPEX SPOT does not support market orders."
-        return None
 
 
 # Satisfy ExchangeAdapter protocol at type-check time.

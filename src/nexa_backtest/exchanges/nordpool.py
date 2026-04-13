@@ -33,8 +33,7 @@ import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities
-from nexa_backtest.types import CancelResult, Order, OrderBook, OrderResult
+from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities, _BaseExchangeAdapter
 
 # Nord Pool IDC product name pattern: {zone}-QH-{HHMM}
 _IDC_QH_PATTERN = re.compile(r"^[A-Z0-9]+-QH-\d{4}$")
@@ -84,7 +83,7 @@ def idc_gate_closure_time(product_id: str) -> datetime | None:
     return None  # pragma: no cover
 
 
-class NordPoolAdapter:
+class NordPoolAdapter(_BaseExchangeAdapter):
     """Exchange adapter for Nord Pool (DA + IDC).
 
     This is a stateless configuration object.  The backtest engine uses it to
@@ -92,13 +91,11 @@ class NordPoolAdapter:
     internal matching engines, not by this adapter.
 
     Attributes:
-        zone: Bidding zone identifier, e.g. ``"NO1"``.
         supports_continuous_trading: Always ``True`` for Nord Pool.
     """
 
     def __init__(self, zone: str) -> None:
-        self._zone = zone
-        self._capabilities = ExchangeCapabilities(
+        capabilities = ExchangeCapabilities(
             exchange_id="nordpool",
             supports_block_bids=True,
             supports_linked_orders=False,
@@ -111,77 +108,8 @@ class NordPoolAdapter:
             mtu_duration_minutes=15,
             gate_closure_minutes_before_delivery=30,
         )
+        super().__init__(zone, capabilities, "Nord Pool")
         self.supports_continuous_trading = True
-
-    @property
-    def capabilities(self) -> ExchangeCapabilities:
-        """Declare Nord Pool exchange capabilities.
-
-        Returns:
-            Frozen :class:`~nexa_backtest.exchanges.base.ExchangeCapabilities`.
-        """
-        return self._capabilities
-
-    def get_products(self) -> list[str]:
-        """Return a representative list of QH product IDs for this zone.
-
-        Returns all 96 quarter-hourly products (00:00-23:45 UTC) for the
-        configured zone.
-
-        Returns:
-            List of product identifiers in ``{zone}-QH-HHMM`` format.
-        """
-        products: list[str] = []
-        for hour in range(24):
-            for minute in (0, 15, 30, 45):
-                products.append(f"{self._zone}-QH-{hour:02d}{minute:02d}")
-        return products
-
-    def get_orderbook(self, product_id: str) -> OrderBook:
-        """Return an empty order book (no live market data in backtesting).
-
-        In backtesting the order book is maintained by the
-        :class:`~nexa_backtest.engines.matching.ContinuousMatchingEngine`.
-        This method exists to satisfy the
-        :class:`~nexa_backtest.exchanges.base.ExchangeAdapter` protocol.
-
-        Args:
-            product_id: Exchange product identifier.
-
-        Returns:
-            Empty :class:`~nexa_backtest.types.OrderBook`.
-        """
-        from datetime import UTC
-
-        return OrderBook(
-            product_id=product_id,
-            bids=[],
-            asks=[],
-            timestamp=datetime.now(tz=UTC),
-        )
-
-    def submit_order(self, order: Order) -> OrderResult:
-        """Submit is handled by the matching engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.  Orders are submitted via the
-                :class:`~nexa_backtest.context.TradingContext`.
-        """
-        raise NotImplementedError(
-            "submit_order is not implemented on NordPoolAdapter. "
-            "Use ctx.place_order() inside the algo."
-        )
-
-    def cancel_order(self, order_id: str) -> CancelResult:
-        """Cancel is handled by the matching engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.
-        """
-        raise NotImplementedError(
-            "cancel_order is not implemented on NordPoolAdapter. "
-            "Use ctx.cancel_order() inside the algo."
-        )
 
     def gate_closure_offset(self, product_type: str = "IDC") -> timedelta:
         """Return the gate closure offset for a given product type.
@@ -195,35 +123,6 @@ class NordPoolAdapter:
         if product_type == "DA":
             return NORDPOOL_DA_GATE_CLOSURE
         return NORDPOOL_IDC_GATE_CLOSURE
-
-    def validate_order(self, order: Order) -> str | None:
-        """Validate an order against Nord Pool exchange rules.
-
-        Args:
-            order: The order to validate.
-
-        Returns:
-            Error message string if invalid, or ``None`` if valid.
-        """
-        if order.volume_mw < self._capabilities.min_volume_mw:
-            return (
-                f"Volume {order.volume_mw} MW below Nord Pool minimum "
-                f"{self._capabilities.min_volume_mw} MW."
-            )
-        if order.price_eur_mwh is not None:
-            if order.price_eur_mwh < self._capabilities.min_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh below Nord Pool minimum "
-                    f"{self._capabilities.min_price_eur_mwh} EUR/MWh."
-                )
-            if order.price_eur_mwh > self._capabilities.max_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh above Nord Pool maximum "
-                    f"{self._capabilities.max_price_eur_mwh} EUR/MWh."
-                )
-        if order.price_eur_mwh is None and not self._capabilities.supports_market_orders:
-            return "Nord Pool does not support market orders."
-        return None
 
 
 # Satisfy ExchangeAdapter protocol at type-check time
