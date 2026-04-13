@@ -197,6 +197,8 @@ class ValidationRunner:
             :class:`ValidationResult` containing per-step results.
         """
         # Import here to avoid circular imports at module load time.
+        from collections.abc import Callable
+
         from nexa_backtest.validation.feature_check import FeatureCheck
         from nexa_backtest.validation.interface_check import InterfaceCheck
         from nexa_backtest.validation.lookahead_check import LookaheadCheck
@@ -222,15 +224,17 @@ class ValidationRunner:
                 syntax_error = True
 
         # Steps 2-6: skip if syntax error.
-        remaining: list[tuple[str, str, object]] = [
-            ("mypy", "Type Safety (mypy)", MypyCheck()),
-            ("interface", "Interface Compliance", InterfaceCheck()),
-            ("features", "Exchange Features", FeatureCheck()),
-            ("lookahead", "Look-Ahead Bias", LookaheadCheck()),
-            ("resources", "Resource Safety", ResourceCheck()),
+        algo_path = self._algo_path
+        exchange = self._exchange
+        remaining: list[tuple[str, str, Callable[[], StepResult]]] = [
+            ("mypy", "Type Safety (mypy)", lambda: MypyCheck().run(algo_path)),
+            ("interface", "Interface Compliance", lambda: InterfaceCheck().run(algo_path)),
+            ("features", "Exchange Features", lambda: FeatureCheck().run(algo_path, exchange)),
+            ("lookahead", "Look-Ahead Bias", lambda: LookaheadCheck().run(algo_path)),
+            ("resources", "Resource Safety", lambda: ResourceCheck().run(algo_path)),
         ]
 
-        for step_key, step_name, _checker in remaining:
+        for step_key, step_name, run_step in remaining:
             if syntax_error:
                 steps.append(
                     StepResult(
@@ -245,26 +249,7 @@ class ValidationRunner:
                 steps.append(StepResult(name=step_name, status="skip"))
                 continue
 
-            if step_key == "mypy":
-                from nexa_backtest.validation.mypy_check import MypyCheck as MC
-
-                steps.append(MC().run(self._algo_path))
-            elif step_key == "interface":
-                from nexa_backtest.validation.interface_check import InterfaceCheck as IC
-
-                steps.append(IC().run(self._algo_path))
-            elif step_key == "features":
-                from nexa_backtest.validation.feature_check import FeatureCheck as FC
-
-                steps.append(FC().run(self._algo_path, self._exchange))
-            elif step_key == "lookahead":
-                from nexa_backtest.validation.lookahead_check import LookaheadCheck as LC
-
-                steps.append(LC().run(self._algo_path))
-            elif step_key == "resources":
-                from nexa_backtest.validation.resource_check import ResourceCheck as RC
-
-                steps.append(RC().run(self._algo_path))
+            steps.append(run_step())
 
         # Step 7 (optional): Model Compatibility
         if not syntax_error and "models" not in self._skip:

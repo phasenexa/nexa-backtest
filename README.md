@@ -49,11 +49,8 @@ Work through the notebooks in order — each builds on the previous:
 
 | Notebook | Covers |
 |---|---|
-| [01-backtester_walkthrough.ipynb](notebooks/01-backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
-| [02-idc_and_metrics_walkthrough.ipynb](notebooks/02-idc_and_metrics_walkthrough.ipynb) | IDC continuous market, order book matching, Sharpe, drawdown, equity curve |
-| [03-custom_signals_walkthrough.ipynb](notebooks/03-custom_signals_walkthrough.ipynb) | Custom `SignalProvider` implementations, publication offset, gate closure NOP analysis |
-| [04-algo_decorator_walkthrough.ipynb](notebooks/04-algo_decorator_walkthrough.ipynb) | The `@algo` async event-stream API for advanced strategies |
-| [05-validation_walkthrough.ipynb](notebooks/05-validation_walkthrough.ipynb) | The validation pipeline — all six checks, exit codes, CI integration |
+| [Backtester walkthrough notebook](notebooks/01-backtester_walkthrough.ipynb) | **Start here.** MTUs, DA auctions, `SimpleAlgo`, VWAP, signals, look-ahead bias |
+| [Remaining notebooks](notebooks/) | Other tutorials and guides in order |
 
 ```bash
 jupyter notebook

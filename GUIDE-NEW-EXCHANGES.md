@@ -55,6 +55,12 @@ the adapter module.
 
 Create `src/nexa_backtest/exchanges/{exchange_name}.py`.
 
+All adapters inherit from `_BaseExchangeAdapter` (defined in `exchanges/base.py`),
+which provides the shared boilerplate: `capabilities` property, `get_products`,
+`get_orderbook`, `submit_order`, `cancel_order`, and `validate_order`. Your
+adapter only needs to define `__init__` (to configure capabilities and call
+`super().__init__`) and `gate_closure_offset` (which varies per exchange).
+
 Use this template, substituting all `{…}` placeholders:
 
 ```python
@@ -73,11 +79,10 @@ Supported { zones / areas } (non-exhaustive)::
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
-from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities
-from nexa_backtest.types import CancelResult, Order, OrderBook, OrderResult
+from nexa_backtest.exchanges.base import ExchangeAdapter, ExchangeCapabilities, _BaseExchangeAdapter
 
 # Gate closure offsets
 {EXCHANGE}_IDC_GATE_CLOSURE = timedelta(minutes={N})
@@ -91,7 +96,7 @@ from nexa_backtest.types import CancelResult, Order, OrderBook, OrderResult
 {EXCHANGE}_MIN_VOLUME = Decimal("0.1")
 
 
-class {ExchangeName}Adapter:
+class {ExchangeName}Adapter(_BaseExchangeAdapter):
     """Exchange adapter for { Exchange } (DA + IDC).
 
     This is a stateless configuration object.  The backtest engine uses it to
@@ -99,14 +104,12 @@ class {ExchangeName}Adapter:
     internal matching engines, not by this adapter.
 
     Attributes:
-        { zone_or_area }: { Zone / Area } identifier, e.g. ``"{ EXAMPLE }"``.
         supports_continuous_trading: Always ``True``.
         supports_auction_trading: ``True`` if the exchange runs auctions.
     """
 
     def __init__(self, { zone_or_area }: str) -> None:
-        self._{ zone_or_area } = { zone_or_area }
-        self._capabilities = ExchangeCapabilities(
+        capabilities = ExchangeCapabilities(
             exchange_id="{exchange_id}",
             supports_block_bids={True|False},
             supports_linked_orders={True|False},
@@ -119,71 +122,9 @@ class {ExchangeName}Adapter:
             mtu_duration_minutes=15,
             gate_closure_minutes_before_delivery={N},
         )
+        super().__init__({ zone_or_area }, capabilities, "{ Exchange Display Name }")
         self.supports_continuous_trading = True
         self.supports_auction_trading = {True|False}
-
-    @property
-    def capabilities(self) -> ExchangeCapabilities:
-        """Declare { Exchange } capabilities.
-
-        Returns:
-            Frozen :class:`~nexa_backtest.exchanges.base.ExchangeCapabilities`.
-        """
-        return self._capabilities
-
-    def get_products(self) -> list[str]:
-        """Return all 96 quarter-hourly product IDs for this { zone / area }.
-
-        Products use the format ``{ {zone_or_area}-QH-HHMM }``.
-
-        Returns:
-            List of 96 product identifiers (00:00-23:45 UTC).
-        """
-        products: list[str] = []
-        for hour in range(24):
-            for minute in (0, 15, 30, 45):
-                products.append(
-                    f"{self._{ zone_or_area }}-QH-{hour:02d}{minute:02d}"
-                )
-        return products
-
-    def get_orderbook(self, product_id: str) -> OrderBook:
-        """Return an empty order book (maintained by the matching engine).
-
-        Args:
-            product_id: Exchange product identifier.
-
-        Returns:
-            Empty :class:`~nexa_backtest.types.OrderBook`.
-        """
-        return OrderBook(
-            product_id=product_id,
-            bids=[],
-            asks=[],
-            timestamp=datetime.now(tz=UTC),
-        )
-
-    def submit_order(self, order: Order) -> OrderResult:
-        """Order submission is handled by the engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.  Use ``ctx.place_order()`` instead.
-        """
-        raise NotImplementedError(
-            "submit_order is not implemented on { ExchangeName }Adapter. "
-            "Use ctx.place_order() inside the algo."
-        )
-
-    def cancel_order(self, order_id: str) -> CancelResult:
-        """Order cancellation is handled by the engine, not the adapter.
-
-        Raises:
-            NotImplementedError: Always.  Use ``ctx.cancel_order()`` instead.
-        """
-        raise NotImplementedError(
-            "cancel_order is not implemented on { ExchangeName }Adapter. "
-            "Use ctx.cancel_order() inside the algo."
-        )
 
     def gate_closure_offset(self, product_type: str = "IDC") -> timedelta:
         """Return the gate closure offset for a given product type.
@@ -198,35 +139,6 @@ class {ExchangeName}Adapter:
             return {EXCHANGE}_DA_GATE_CLOSURE
         return {EXCHANGE}_IDC_GATE_CLOSURE
 
-    def validate_order(self, order: Order) -> str | None:
-        """Validate an order against { Exchange } exchange rules.
-
-        Args:
-            order: The order to validate.
-
-        Returns:
-            Error message string if invalid, or ``None`` if valid.
-        """
-        if order.volume_mw < self._capabilities.min_volume_mw:
-            return (
-                f"Volume {order.volume_mw} MW below { Exchange } minimum "
-                f"{self._capabilities.min_volume_mw} MW."
-            )
-        if order.price_eur_mwh is not None:
-            if order.price_eur_mwh < self._capabilities.min_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh below { Exchange } minimum "
-                    f"{self._capabilities.min_price_eur_mwh} EUR/MWh."
-                )
-            if order.price_eur_mwh > self._capabilities.max_price_eur_mwh:
-                return (
-                    f"Price {order.price_eur_mwh} EUR/MWh above { Exchange } maximum "
-                    f"{self._capabilities.max_price_eur_mwh} EUR/MWh."
-                )
-        if order.price_eur_mwh is None and not self._capabilities.supports_market_orders:
-            return "{ Exchange } does not support market orders."
-        return None
-
 
 # Satisfy ExchangeAdapter protocol at type-check time.
 def _check_adapter_protocol(adapter: ExchangeAdapter) -> None:  # pragma: no cover
@@ -235,6 +147,27 @@ def _check_adapter_protocol(adapter: ExchangeAdapter) -> None:  # pragma: no cov
 
 _check_adapter_protocol({ ExchangeName }Adapter.__new__({ ExchangeName }Adapter))
 ```
+
+### What `_BaseExchangeAdapter` provides for free
+
+You do **not** need to implement these — they are inherited:
+
+| Method / property | Behaviour |
+|---|---|
+| `capabilities` | Returns the `ExchangeCapabilities` passed to `super().__init__`. |
+| `get_products()` | Returns 96 QH product IDs using `{area_id}-QH-HHMM` format. |
+| `get_orderbook()` | Returns an empty `OrderBook` (matching engine maintains state). |
+| `submit_order()` | Raises `NotImplementedError` — use `ctx.place_order()`. |
+| `cancel_order()` | Raises `NotImplementedError` — use `ctx.cancel_order()`. |
+| `validate_order()` | Checks volume and price against `ExchangeCapabilities` limits. |
+
+The three arguments to `super().__init__` are:
+
+- **`area_id`** — the zone or area code (e.g. `"DE-LU"`). Used as the prefix in
+  `get_products()` and referenced as `self._area_id` internally.
+- **`capabilities`** — the `ExchangeCapabilities` instance you constructed.
+- **`display_name`** — human-readable name used in `validate_order` error
+  messages (e.g. `"EPEX SPOT"`, `"Nord Pool"`).
 
 ### Protocol compliance check
 
@@ -558,8 +491,8 @@ function body. Pandas is an optional dependency; importing it at module level
 breaks users who have not installed it.
 
 **Using naive datetimes.** All timestamps must be timezone-aware. In parsers,
-always pass `utc=True` to `pd.to_datetime`. In the adapter's `get_orderbook`,
-always pass `tz=UTC` to `datetime.now`.
+always pass `utc=True` to `pd.to_datetime`. The base class `get_orderbook`
+already passes `tz=UTC` to `datetime.now`; if you override it, do the same.
 
 **Guessing `aggressor_side`.** If the exchange does not export it, set it to
 `None`. The matching engine has a fallback heuristic. Inferring it incorrectly
