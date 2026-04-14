@@ -15,7 +15,7 @@ Prerequisites (install the dev extras)::
 
 Run::
 
-    python python examples/ml_da_algo.py --data-dir tests/fixtures \\
+    python examples/ml_da_algo.py --data-dir tests/fixtures \\
         --start 2026-03-01 --end 2026-03-31 --zone NO1
 
 The script will train a model from the DA price history in the Parquet

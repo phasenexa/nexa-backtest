@@ -489,6 +489,14 @@ nexa compare \
     --products NO1_DA --data-dir ./data \
     --output reports/comparison.html   # .html or .json
 
+# Or select individual classes from a single file with name:path:ClassName
+nexa compare \
+    "conservative:examples/multi_algo_comparison.py:ConservativeAlgo" \
+    "moderate:examples/multi_algo_comparison.py:ModerateAlgo" \
+    "aggressive:examples/multi_algo_comparison.py:AggressiveAlgo" \
+    --exchange nordpool --start 2026-03-01 --end 2026-03-31 \
+    --products NO1_DA --data-dir ./data
+
 nexa validate my_algo.py --exchange nordpool
 nexa compile my_algo.py --output my_algo.so
 ```

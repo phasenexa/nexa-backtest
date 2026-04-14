@@ -115,12 +115,12 @@ class NordPoolAdapter(_BaseExchangeAdapter):
         """Return the gate closure offset for a given product type.
 
         Args:
-            product_type: ``"DA"`` or ``"IDC"``.
+            product_type: ``"DA"``, ``"IDA"``, or ``"IDC"``.
 
         Returns:
             Time before delivery start that gate closes.
         """
-        if product_type == "DA":
+        if product_type in ("DA", "IDA"):
             return NORDPOOL_DA_GATE_CLOSURE
         return NORDPOOL_IDC_GATE_CLOSURE
 

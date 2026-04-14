@@ -11,6 +11,7 @@ human-readable report. Exits with:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import click
@@ -56,6 +57,13 @@ from nexa_backtest.validation.runner import ValidationRunner
         "Repeat for multiple models."
     ),
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress non-essential output including the first-run notice.",
+)
 def validate_command(
     algo_file: str,
     exchange: str,
@@ -63,6 +71,7 @@ def validate_command(
     skip: str,
     output_json: bool,
     model_specs: tuple[str, ...],
+    quiet: bool,
 ) -> None:
     """Validate ALGO_FILE against the target exchange before running.
 
@@ -111,6 +120,11 @@ def validate_command(
             )
 
     # Exit codes
+    if not quiet and not os.environ.get("NEXA_QUIET"):
+        from nexa_backtest.cli.notice import maybe_show_notice
+
+        maybe_show_notice()
+
     if not result.passed:
         if strict and result.warning_count > 0 and result.error_count == 0:
             sys.exit(2)

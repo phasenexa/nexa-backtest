@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import os
 import sys
 from datetime import datetime
 from decimal import Decimal
@@ -107,6 +108,13 @@ cli.add_command(validate_command)
         "(.onnx → ONNX, .pkl/.joblib → scikit-learn). Repeat for multiple models."
     ),
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress non-essential output including the first-run notice.",
+)
 def run_command(
     algo_file: str,
     exchange: str,
@@ -119,6 +127,7 @@ def run_command(
     run_validation: bool,
     strict: bool,
     model_specs: tuple[str, ...],
+    quiet: bool,
 ) -> None:
     """Run a backtest from ALGO_FILE and print the PnL summary.
 
@@ -194,6 +203,11 @@ def run_command(
         except Exception as exc:
             raise click.ClickException(f"Failed to write output to '{output}': {exc}") from exc
 
+    if not quiet and not os.environ.get("NEXA_QUIET"):
+        from nexa_backtest.cli.notice import maybe_show_notice
+
+        maybe_show_notice()
+
 
 @cli.command("compare")
 @click.argument("algo_specs", nargs=-1, required=True)
@@ -237,6 +251,13 @@ def run_command(
         "Summary is always printed to stdout."
     ),
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress non-essential output including the first-run notice.",
+)
 def compare_command(
     algo_specs: tuple[str, ...],
     exchange: str,
@@ -246,13 +267,25 @@ def compare_command(
     data_dir: str,
     capital: float,
     output: str | None,
+    quiet: bool,
 ) -> None:
     """Run multiple algos against the same data and compare results.
 
-    ALGO_SPECS are algo file paths, optionally prefixed with a display name:
+    ALGO_SPECS are algo file paths, optionally prefixed with a display name
+    and/or a class name:
 
     \b
+        # Separate files, one class each
         nexa compare conservative:algos/conservative.py aggressive:algos/aggressive.py \\
+            --exchange nordpool --start 2026-03-01 --end 2026-03-31 \\
+            --products NO1_DA --data-dir ./data
+
+    \b
+        # Single file containing multiple SimpleAlgo subclasses
+        nexa compare \\
+            conservative:examples/multi_algo_comparison.py:ConservativeAlgo \\
+            moderate:examples/multi_algo_comparison.py:ModerateAlgo \\
+            aggressive:examples/multi_algo_comparison.py:AggressiveAlgo \\
             --exchange nordpool --start 2026-03-01 --end 2026-03-31 \\
             --products NO1_DA --data-dir ./data
 
@@ -269,20 +302,25 @@ def compare_command(
 
     algos: dict[str, Any] = {}
     for spec in algo_specs:
-        if ":" in spec:
-            display_name, _, algo_path = spec.partition(":")
+        parts = spec.split(":", 2)
+        if len(parts) == 3:
+            display_name, algo_path, class_name = parts
+        elif len(parts) == 2:
+            display_name, algo_path = parts
+            class_name = None
         else:
             algo_path = spec
             display_name = Path(algo_path).stem
+            class_name = None
 
         if display_name in algos:
             raise click.ClickException(
                 f"Duplicate display name '{display_name}'.  "
-                "Use 'name:path' format to provide unique names."
+                "Use 'name:path' or 'name:path:ClassName' format to provide unique names."
             )
 
         try:
-            algo_or_class = _load_algo(algo_path)
+            algo_or_class = _load_algo(algo_path, class_name=class_name)
         except (NexaBacktestError, AlgoError) as exc:
             raise click.ClickException(str(exc)) from exc
 
@@ -330,6 +368,11 @@ def compare_command(
                 f"Failed to write comparison output to '{output}': {exc}"
             ) from exc
 
+    if not quiet and not os.environ.get("NEXA_QUIET"):
+        from nexa_backtest.cli.notice import maybe_show_notice
+
+        maybe_show_notice()
+
 
 # ------------------------------------------------------------------
 # Algo discovery helpers
@@ -353,7 +396,7 @@ def _load_module(path: str) -> ModuleType:
     return module
 
 
-def _load_algo(path: str) -> type[SimpleAlgo] | Any:
+def _load_algo(path: str, *, class_name: str | None = None) -> type[SimpleAlgo] | Any:
     """Find a runnable algo in ``path``.
 
     Accepts either a unique :class:`~nexa_backtest.algo.SimpleAlgo` subclass
@@ -361,8 +404,16 @@ def _load_algo(path: str) -> type[SimpleAlgo] | Any:
     priority when both are present; an error is raised if multiple candidates
     of either kind are found.
 
+    When ``class_name`` is provided, the discovered subclasses are filtered to
+    the one with that exact name.  This allows a single file containing
+    multiple :class:`~nexa_backtest.algo.SimpleAlgo` subclasses to be used
+    with the ``nexa compare`` command via the ``name:path:ClassName`` spec
+    format.
+
     Args:
         path: Path to a Python file.
+        class_name: Optional name of the specific ``SimpleAlgo`` subclass to
+            load.  When omitted the file must contain exactly one subclass.
 
     Returns:
         A :class:`~nexa_backtest.algo.SimpleAlgo` subclass (to be instantiated
@@ -370,8 +421,9 @@ def _load_algo(path: str) -> type[SimpleAlgo] | Any:
         directly to :class:`~nexa_backtest.engines.backtest.BacktestEngine`).
 
     Raises:
-        :class:`click.ClickException`: If no valid algo is found, or if
-            multiple candidates are found.
+        :class:`click.ClickException`: If no valid algo is found, if multiple
+            candidates are found without a ``class_name`` selector, or if the
+            named class does not exist in the file.
     """
     module = _load_module(path)
 
@@ -395,12 +447,23 @@ def _load_algo(path: str) -> type[SimpleAlgo] | Any:
             )
         return algo_fns[0]
 
+    if class_name is not None:
+        matched = [c for c in subclasses if c.__name__ == class_name]
+        if not matched:
+            available = ", ".join(c.__name__ for c in subclasses) if subclasses else "none"
+            raise click.ClickException(
+                f"Class '{class_name}' not found in '{path}'. "
+                f"Available SimpleAlgo subclasses: {available}."
+            )
+        return matched[0]
+
     if subclasses:
         if len(subclasses) > 1:
             names = ", ".join(c.__name__ for c in subclasses)
             raise click.ClickException(
                 f"Multiple SimpleAlgo subclasses found in '{path}': {names}. "
-                "Move the unused classes to a separate file."
+                "Use 'name:path:ClassName' format to select a specific class, "
+                "or move the unused classes to a separate file."
             )
         return subclasses[0]
 
