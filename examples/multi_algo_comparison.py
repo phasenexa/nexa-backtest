@@ -8,11 +8,13 @@ Run via::
 
     python examples/multi_algo_comparison.py
 
-Or via the CLI::
+Or via the CLI (use ``name:path:ClassName`` to select individual classes from
+this file)::
 
     nexa compare \\
-        "conservative:examples/multi_algo_comparison.py" \\
-        "aggressive:examples/multi_algo_comparison.py" \\
+        "conservative:examples/multi_algo_comparison.py:ConservativeAlgo" \\
+        "moderate:examples/multi_algo_comparison.py:ModerateAlgo" \\
+        "aggressive:examples/multi_algo_comparison.py:AggressiveAlgo" \\
         --exchange nordpool \\
         --start 2026-03-01 \\
         --end 2026-03-31 \\

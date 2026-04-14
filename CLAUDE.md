@@ -360,6 +360,8 @@ Optional extras:
   ctx.time_to_gate_closure() rather than hardcoding offsets.
 - **time.sleep() pauses the real clock, not the simulated one.** The
   validation pipeline catches this. Use ctx.wait() for simulated delays.
+- **Use `poetry run python` instead of `python` or `python3`** as this loads
+  the necessary poetry settings and ensures the correct python path.
 
 ## Makefile targets
 

@@ -84,6 +84,67 @@ class TestFindAlgoClass:
         with pytest.raises(click.ClickException, match="Multiple"):
             find_algo_class(str(algo_file))
 
+    def test_multiple_subclasses_raises_mentions_class_name_hint(self, tmp_path: Path) -> None:
+        code = """
+            from nexa_backtest.algo import SimpleAlgo
+            class AlgoA(SimpleAlgo):
+                pass
+            class AlgoB(SimpleAlgo):
+                pass
+        """
+        algo_file = _write_algo(tmp_path / "algo.py", code)
+        import click
+
+        with pytest.raises(click.ClickException, match="name:path:ClassName"):
+            find_algo_class(str(algo_file))
+
+
+class TestLoadAlgoClassNameSelection:
+    """Tests for the optional class_name selector in _load_algo."""
+
+    def test_select_named_class_from_multi_class_file(self, tmp_path: Path) -> None:
+        code = """
+            from nexa_backtest.algo import SimpleAlgo
+            class AlgoA(SimpleAlgo):
+                pass
+            class AlgoB(SimpleAlgo):
+                pass
+        """
+        algo_file = _write_algo(tmp_path / "multi.py", code)
+        from nexa_backtest.cli.main import _load_algo
+
+        result = _load_algo(str(algo_file), class_name="AlgoA")
+        assert result.__name__ == "AlgoA"
+
+        result_b = _load_algo(str(algo_file), class_name="AlgoB")
+        assert result_b.__name__ == "AlgoB"
+
+    def test_class_name_not_found_raises(self, tmp_path: Path) -> None:
+        code = """
+            from nexa_backtest.algo import SimpleAlgo
+            class AlgoA(SimpleAlgo):
+                pass
+        """
+        algo_file = _write_algo(tmp_path / "single.py", code)
+        import click
+
+        from nexa_backtest.cli.main import _load_algo
+
+        with pytest.raises(click.ClickException, match="NonExistent"):
+            _load_algo(str(algo_file), class_name="NonExistent")
+
+    def test_class_name_with_single_class_file(self, tmp_path: Path) -> None:
+        code = """
+            from nexa_backtest.algo import SimpleAlgo
+            class MyAlgo(SimpleAlgo):
+                pass
+        """
+        algo_file = _write_algo(tmp_path / "single.py", code)
+        from nexa_backtest.cli.main import _load_algo
+
+        result = _load_algo(str(algo_file), class_name="MyAlgo")
+        assert result.__name__ == "MyAlgo"
+
 
 # ---------------------------------------------------------------------------
 # Tests: nexa run CLI command

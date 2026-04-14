@@ -1,4 +1,4 @@
-.PHONY: install lint typecheck test ci test-notebooks execute-notebooks
+.PHONY: install lint typecheck test ci test-notebooks execute-notebooks clear-notice
 
 install:
 	poetry install
@@ -20,3 +20,6 @@ test-notebooks:
 
 execute-notebooks:
 	poetry run jupyter nbconvert --to notebook --execute --inplace notebooks/*.ipynb
+
+clear-notice:
+	rm -f ~/.config/nexa/notice_shown 2>/dev/null
