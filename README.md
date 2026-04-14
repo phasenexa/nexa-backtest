@@ -33,17 +33,6 @@ nexa-backtest is purpose-built for this. It replays historical market conditions
 pip install nexa-backtest
 ```
 
-With optional extras:
-
-```bash
-pip install nexa-backtest[pandas]       # DataFrame output
-pip install nexa-backtest[ml]           # ONNX model inference
-pip install nexa-backtest[charts]       # Report charts (matplotlib/plotly)
-pip install nexa-backtest[marketdata]   # Data fetching via nexa-marketdata
-pip install nexa-backtest[live]         # Live trading via nexa-connect
-pip install nexa-backtest[all]          # Everything
-```
-
 ## Walkthrough Notebooks
 
 Work through the notebooks in order — each builds on the previous:
@@ -57,6 +46,20 @@ Work through the notebooks in order — each builds on the previous:
 ```bash
 jupyter notebook
 ```
+
+## Support & Commercial Tiers
+
+nexa-backtest is MIT-licensed and always will be. The open-source library is
+the real product, not a demo.
+
+If your team is building trading infrastructure on top of it and you want
+guaranteed response times, roadmap input, or custom development, there are
+paid support tiers available.
+
+**[See support options](SUPPORT.md)** | **[GitHub Discussions](https://github.com/phasenexa/nexa-backtest/discussions)**
+
+Using nexa-backtest in production? [Reach out](mailto:tom.medhurst@bradyplc.com) -
+even a quick note helps us understand what people are building.
 
 ## Quick Start
 
