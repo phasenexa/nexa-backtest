@@ -27,10 +27,9 @@ from nexa_backtest.engines.backtest import (
     SimpleAlgoDispatcher,
     _BacktestContext,
 )
-from nexa_backtest.engines.clock import SimulatedClock
 from nexa_backtest.exceptions import AlgoError
-from nexa_backtest.signals.registry import SignalRegistry
 from nexa_backtest.types import GateClosureEvent, GateClosureWarning, MarketEvent, SignalValue
+from tests.testing_utils import make_minimal_backtest_context
 
 # ---------------------------------------------------------------------------
 # Tests: @algo decorator validation
@@ -135,12 +134,7 @@ def test_async_algo_dispatcher_requires_algo_fn() -> None:
 
 def test_events_raises_in_simple_algo_mode(tmp_path: Path) -> None:
     """ctx.events() must raise AlgoError when called from SimpleAlgo context."""
-    from nexa_backtest.engines.backtest import _BacktestContext
-    from nexa_backtest.engines.clock import SimulatedClock
-    from nexa_backtest.signals.registry import SignalRegistry
-
-    clock = SimulatedClock(initial_time=datetime(2026, 3, 1, tzinfo=UTC))
-    ctx = _BacktestContext(clock=clock, signal_registry=SignalRegistry())
+    ctx = make_minimal_backtest_context(initial_time=datetime(2026, 3, 1, tzinfo=UTC))
 
     # _event_queue is None → should raise AlgoError.
     with pytest.raises(AlgoError, match="events\\(\\)"):
@@ -390,8 +384,7 @@ def test_algo_receives_fill_events(idc_data_dir: Path) -> None:
 
 def _make_ctx() -> _BacktestContext:
     """Return a minimal _BacktestContext for dispatcher unit tests."""
-    clock = SimulatedClock(initial_time=datetime(2026, 3, 1, 12, 0, tzinfo=UTC))
-    return _BacktestContext(clock=clock, signal_registry=SignalRegistry())
+    return make_minimal_backtest_context(initial_time=datetime(2026, 3, 1, 12, 0, tzinfo=UTC))
 
 
 def _make_passthrough_algo() -> object:
