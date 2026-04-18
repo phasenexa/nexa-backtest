@@ -232,6 +232,9 @@ class ContinuousMatchingEngine:
         # Last trade price per product (for get_last_price on context)
         self._last_trade_price: dict[str, Decimal] = {}
 
+        # Session VWAP accumulators: {product_id: (sum_notional, sum_volume)}
+        self._vwap_accum: dict[str, tuple[Decimal, Decimal]] = {}
+
         # Gate closure times per product (set by the engine before each MTU)
         self._gate_closures: dict[str, datetime] = {}
 
@@ -299,6 +302,11 @@ class ContinuousMatchingEngine:
 
     def _process_historical_trade(self, event: HistoricalTrade) -> list[Fill]:
         self._last_trade_price[event.product_id] = event.price_eur_mwh
+        prev = self._vwap_accum.get(event.product_id, (Decimal("0"), Decimal("0")))
+        self._vwap_accum[event.product_id] = (
+            prev[0] + event.price_eur_mwh * event.volume_mw,
+            prev[1] + event.volume_mw,
+        )
         return self._check_algo_orders_vs_trade(event)
 
     # ------------------------------------------------------------------
@@ -476,6 +484,23 @@ class ContinuousMatchingEngine:
             Last trade price in EUR/MWh, or ``None`` if no trades yet.
         """
         return self._last_trade_price.get(product_id)
+
+    def get_session_vwap(self, product_id: str) -> Decimal | None:
+        """Return the session VWAP for a product based on historical trades.
+
+        Computed as the running volume-weighted average of all historical trade
+        prices seen so far for the product.
+
+        Args:
+            product_id: Exchange product identifier.
+
+        Returns:
+            Session VWAP in EUR/MWh, or ``None`` if no trades have occurred.
+        """
+        accum = self._vwap_accum.get(product_id)
+        if accum is None or accum[1] == Decimal("0"):
+            return None
+        return accum[0] / accum[1]
 
     def get_resting_algo_order_ids(self) -> list[str]:
         """Return IDs of all resting algo orders.

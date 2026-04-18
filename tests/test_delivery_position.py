@@ -6,22 +6,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from nexa_backtest.engines.backtest import _BacktestContext
-from nexa_backtest.engines.clock import SimulatedClock
-from nexa_backtest.signals.registry import SignalRegistry
 from nexa_backtest.types import Fill, Side
+from tests.testing_utils import make_minimal_backtest_context
 
 
 def _make_ctx(
     products: dict[str, datetime] | None = None,
 ) -> _BacktestContext:
     """Create a minimal _BacktestContext with optional product delivery starts."""
-    clock = SimulatedClock(
-        initial_time=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
-    )
-    ctx = _BacktestContext(clock=clock, signal_registry=SignalRegistry())
-    if products:
-        ctx._product_delivery_starts = products
-    return ctx
+    return make_minimal_backtest_context(products=products)
 
 
 def _record_fill(ctx: _BacktestContext, product_id: str, side: Side, volume: Decimal) -> None:

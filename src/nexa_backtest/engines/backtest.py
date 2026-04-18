@@ -409,9 +409,14 @@ class _BacktestContext:
         return self._clearing_prices.get(product_id)
 
     def get_vwap(self, product_id: str) -> Decimal | None:
-        """Return the session VWAP for ``product_id``."""
+        """Return the session VWAP for ``product_id``.
+
+        For IDC products returns the volume-weighted average of all historical
+        trades seen so far in the session.  For DA products returns the
+        clearing price (which is also the uniform-price VWAP).
+        """
         if self._idc_engine is not None:
-            return self._idc_engine.get_last_trade_price(product_id)
+            return self._idc_engine.get_session_vwap(product_id)
         return self._clearing_prices.get(product_id)
 
     # ------------------------------------------------------------------
@@ -770,6 +775,10 @@ class BacktestEngine:
         self._signals: list[SignalProvider] = signals or []
         self._models = models
 
+        # Tracks which subscribed signals were successfully dispatched at least once.
+        # Checked at the end of run() to warn about signals that never had data.
+        self._signals_ever_dispatched: set[str] = set()
+
         # Resolve dispatcher based on whether this is a SimpleAlgo or @algo fn.
         if isinstance(algo, SimpleAlgo):
             self._dispatcher: SimpleAlgoDispatcher | AsyncAlgoDispatcher = SimpleAlgoDispatcher(
@@ -800,6 +809,9 @@ class BacktestEngine:
         """
         if not self._products:
             raise DataError("No products specified.")
+
+        # Reset per-run dispatch tracking.
+        self._signals_ever_dispatched.clear()
 
         da_products = [p for p in self._products if _is_da_product(p)]
         idc_products = [p for p in self._products if _is_idc_product(p)]
@@ -891,6 +903,8 @@ class BacktestEngine:
             sum(nop_values, Decimal("0")) / Decimal(len(nop_values)) if nop_values else Decimal("0")
         )
         max_gate_nop = max(nop_values, default=Decimal("0"))
+
+        self._warn_undispatched_signals()
 
         return BacktestResult(
             algo_name=self._algo_name,
@@ -1230,6 +1244,7 @@ class BacktestEngine:
                 try:
                     value = context.get_signal(signal_name)
                     self._dispatcher.on_signal(context, signal_name, value)
+                    self._signals_ever_dispatched.add(signal_name)
                 except SignalError:
                     logger.debug(
                         "No value yet for signal '%s' at %s — skipping.",
@@ -1237,8 +1252,34 @@ class BacktestEngine:
                         context.now().isoformat(),
                     )
 
+    def _warn_undispatched_signals(self) -> None:
+        """Warn about subscribed signals that were never dispatched during the run.
+
+        A signal that is subscribed but never dispatches a value likely has a
+        data range mismatch or an incorrect ``publication_offset``, causing the
+        algo to silently receive no signal updates for the entire backtest.
+        """
+        subscribed = set(self._dispatcher.subscribed_signals)
+        never_dispatched = subscribed - self._signals_ever_dispatched
+        for name in sorted(never_dispatched):
+            logger.warning(
+                "Signal '%s' was subscribed but no value was ever dispatched during "
+                "this backtest. Check that the signal data covers the backtest period "
+                "and that publication_offset is set correctly.",
+                name,
+            )
+
     def _discover_signals(self, registry: SignalRegistry) -> None:
-        """Auto-register CSV providers for subscribed but unregistered signals."""
+        """Auto-register CSV providers for subscribed but unregistered signals.
+
+        Auto-discovered signals cannot have a ``publication_offset`` inferred
+        automatically.  They default to ``None``, meaning values are visible at
+        their exact timestamp.  This is correct for actuals but introduces
+        **look-ahead bias** for forecast data.  Pass an explicit
+        :class:`~nexa_backtest.signals.csv_loader.CsvSignalProvider` with
+        ``publication_offset`` set via the ``signals`` argument to
+        :class:`BacktestEngine` to suppress this warning.
+        """
         signals_dir = self._data_dir / "signals"
         for signal_name in self._dispatcher.subscribed_signals:
             if registry.has(signal_name):
@@ -1249,6 +1290,14 @@ class BacktestEngine:
                     f"Signal '{signal_name}' is subscribed by the algo but no CSV "
                     f"was found at '{csv_path}'."
                 )
+            logger.warning(
+                "Auto-loading signal '%s' without a publication_offset. "
+                "If '%s' is forecast data this will introduce look-ahead bias. "
+                "Pass an explicit CsvSignalProvider(publication_offset=...) via the "
+                "signals= argument to BacktestEngine to fix this.",
+                signal_name,
+                signal_name,
+            )
             provider = CsvSignalProvider(
                 name=signal_name,
                 path=csv_path,
