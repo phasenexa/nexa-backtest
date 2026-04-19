@@ -11,6 +11,7 @@ import ast
 import time
 from pathlib import Path
 
+from nexa_backtest.validation._utils import _elapsed_ms
 from nexa_backtest.validation.runner import StepResult
 
 # Expected hook signatures for SimpleAlgo methods.
@@ -309,7 +310,3 @@ def _check_multiple_definitions(
             f"{filename}: Multiple algo definitions found: {', '.join(names)}. "
             "Place each algo in its own file. Ambiguous file cannot be loaded."
         )
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)

@@ -10,6 +10,7 @@ import ast
 import time
 from pathlib import Path
 
+from nexa_backtest.validation._utils import _elapsed_ms
 from nexa_backtest.validation.runner import StepResult
 
 # Methods/attributes that indicate time.sleep or asyncio.sleep.
@@ -338,7 +339,3 @@ def _check_mutable_globals(
                 "({}) may leak state between backtest runs. "
                 "Move state into the algo class or function.".format(type(val).__name__.lower())
             )
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)

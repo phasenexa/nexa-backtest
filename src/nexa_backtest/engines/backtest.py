@@ -840,7 +840,7 @@ class BacktestEngine:
             registry.register(provider)
 
         # Determine the zone (first product wins)
-        zone = self._parse_zone()
+        zone = _parse_zone(self._products[0])
 
         all_fills: list[Fill] = []
         equity_snapshots: list[EquitySnapshot] = []
@@ -1314,10 +1314,6 @@ class BacktestEngine:
         """Return D-1 12:00 UTC as the simulated clock time for the DA auction."""
         delivery_dt = datetime.combine(delivery_date, time(0, 0), tzinfo=UTC)
         return delivery_dt + _AUCTION_OFFSET
-
-    def _parse_zone(self) -> str:
-        """Extract zone from the first product spec."""
-        return _parse_zone(self._products[0])
 
 
 def _mtu_to_product_id(mtu_start: datetime, zone: str) -> str:

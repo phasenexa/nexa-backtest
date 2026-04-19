@@ -12,6 +12,7 @@ import ast
 import time
 from pathlib import Path
 
+from nexa_backtest.validation._utils import _elapsed_ms
 from nexa_backtest.validation.runner import StepResult
 
 # Large lookback threshold for get_signal_history() in number of MTUs.
@@ -222,7 +223,3 @@ def _check_sort_iloc(
                     "rows that are chronologically in the future after sorting. "
                     "Verify this does not introduce look-ahead bias."
                 )
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)
