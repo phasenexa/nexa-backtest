@@ -12,6 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from nexa_backtest.validation._utils import _elapsed_ms
 from nexa_backtest.validation.runner import StepResult
 
 # mypy output line pattern: filename:line: severity: message  [error-code]
@@ -109,7 +110,3 @@ class MypyCheck:
             messages=messages,
             duration_ms=duration,
         )
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)

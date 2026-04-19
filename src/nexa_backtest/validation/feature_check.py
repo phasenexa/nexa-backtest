@@ -13,6 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from nexa_backtest.exchanges.base import ExchangeCapabilities
+from nexa_backtest.validation._utils import _elapsed_ms
 from nexa_backtest.validation.runner import StepResult
 
 # Map exchange name → capabilities factory.
@@ -229,7 +230,3 @@ def _extract_numeric(node: ast.expr) -> float | int | None:
     ):
         return -node.operand.value
     return None
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)
