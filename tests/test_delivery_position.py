@@ -177,12 +177,24 @@ def test_get_position_avg_price_partial_close() -> None:
     ctx = _make_ctx()
     ts = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
     ctx._record_fill(
-        Fill(order_id="o1", product_id="P", price=Decimal("50"), volume=Decimal("100"),
-             timestamp=ts, side=Side.BUY)
+        Fill(
+            order_id="o1",
+            product_id="P",
+            price=Decimal("50"),
+            volume=Decimal("100"),
+            timestamp=ts,
+            side=Side.BUY,
+        )
     )
     ctx._record_fill(
-        Fill(order_id="o2", product_id="P", price=Decimal("60"), volume=Decimal("50"),
-             timestamp=ts, side=Side.SELL)
+        Fill(
+            order_id="o2",
+            product_id="P",
+            price=Decimal("60"),
+            volume=Decimal("50"),
+            timestamp=ts,
+            side=Side.SELL,
+        )
     )
     pos = ctx.get_position("P")
     assert pos.net_mw == Decimal("50")
@@ -197,16 +209,29 @@ def test_get_position_avg_price_short_after_partial_buy_back() -> None:
     ctx = _make_ctx()
     ts = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
     ctx._record_fill(
-        Fill(order_id="o1", product_id="P", price=Decimal("50"), volume=Decimal("100"),
-             timestamp=ts, side=Side.SELL)
+        Fill(
+            order_id="o1",
+            product_id="P",
+            price=Decimal("50"),
+            volume=Decimal("100"),
+            timestamp=ts,
+            side=Side.SELL,
+        )
     )
     ctx._record_fill(
-        Fill(order_id="o2", product_id="P", price=Decimal("45"), volume=Decimal("40"),
-             timestamp=ts, side=Side.BUY)
+        Fill(
+            order_id="o2",
+            product_id="P",
+            price=Decimal("45"),
+            volume=Decimal("40"),
+            timestamp=ts,
+            side=Side.BUY,
+        )
     )
     pos = ctx.get_position("P")
     assert pos.net_mw == Decimal("-60")
     assert pos.avg_entry_price == Decimal("50"), (
         f"Expected avg_entry_price=50, got {pos.avg_entry_price}. "
-        "Partial buy-back at a different price should not change the entry price of the remaining short."
+        "Partial buy-back at a different price should not change "
+        "the entry price of the remaining short."
     )
