@@ -502,6 +502,18 @@ class ContinuousMatchingEngine:
             return None
         return accum[0] / accum[1]
 
+    def get_vwap_accumulator(self) -> dict[str, tuple[Decimal, Decimal]]:
+        """Return a snapshot of the raw VWAP accumulator for all products.
+
+        Each value is ``(sum_notional, sum_volume)``.  Used by the backtest
+        engine to compute per-product VWAPs for final metrics without
+        maintaining a separate duplicate accumulator.
+
+        Returns:
+            A copy of the internal accumulator dict.
+        """
+        return dict(self._vwap_accum)
+
     def get_resting_algo_order_ids(self) -> list[str]:
         """Return IDs of all resting algo orders.
 

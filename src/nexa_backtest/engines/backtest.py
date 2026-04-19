@@ -67,7 +67,6 @@ from nexa_backtest.types import (
     GateClosureEvent,
     GateClosureSnapshot,
     GateClosureWarning,
-    HistoricalTrade,
     MarketEvent,
     Order,
     OrderBook,
@@ -496,19 +495,32 @@ class _BacktestContext:
             return _zero_position(product_id)
 
         net_mw = Decimal("0")
-        total_cost = Decimal("0")
+        total_buy_cost = Decimal("0")
+        total_buy_vol = Decimal("0")
+        total_sell_cost = Decimal("0")
+        total_sell_vol = Decimal("0")
         for f in fills:
             if f.side == Side.BUY:
                 net_mw += f.volume
-                total_cost += f.price * f.volume
+                total_buy_cost += f.price * f.volume
+                total_buy_vol += f.volume
             else:
                 net_mw -= f.volume
-                total_cost -= f.price * f.volume
+                total_sell_cost += f.price * f.volume
+                total_sell_vol += f.volume
 
         if net_mw == 0:
             return _zero_position(product_id)
 
-        avg_price = abs(total_cost / net_mw)
+        # Avg entry price is the volume-weighted average of the opens that
+        # created the current directional position (buys for long, sells for
+        # short). Using the opposite side's cost would corrupt the price when
+        # a partial close at a different price has occurred.
+        if net_mw > 0:
+            avg_price = total_buy_cost / total_buy_vol
+        else:
+            avg_price = total_sell_cost / total_sell_vol
+
         if self._idc_engine is not None:
             mark = self._idc_engine.get_last_trade_price(product_id) or avg_price
         else:
@@ -1085,10 +1097,6 @@ class BacktestEngine:
         gate_closure_snapshots: list[GateClosureSnapshot] = []
         cumulative_pnl = Decimal("0")
         gate_warned: set[str] = set()
-        # IDC market VWAP accumulators: {product_id: (sum_notional, sum_volume)}
-        # Accumulated incrementally as HistoricalTrade events flow through the loop.
-        # O(P) memory — never loads more data than the current sliding window.
-        idc_vwap_accum: dict[str, tuple[Decimal, Decimal]] = {}
 
         current_time = start_dt
         while current_time < end_dt:
@@ -1104,13 +1112,6 @@ class BacktestEngine:
                     with contextlib.suppress(Exception):
                         self._dispatcher.on_error(context, exc)
                     continue
-                # Accumulate market-side trade VWAP incrementally.
-                if isinstance(event, HistoricalTrade):
-                    prev = idc_vwap_accum.get(event.product_id, (Decimal("0"), Decimal("0")))
-                    idc_vwap_accum[event.product_id] = (
-                        prev[0] + event.price_eur_mwh * event.volume_mw,
-                        prev[1] + event.volume_mw,
-                    )
                 # Forward historical event to @algo stream.
                 self._dispatcher.on_market_event(context, event)
                 for fill in fills:
@@ -1166,12 +1167,13 @@ class BacktestEngine:
             bar_all_fills = [f for f in all_fills if _in_mtu(f.timestamp, current_time, next_time)]
             if bar_all_fills:
                 # Use running per-product VWAP for equity curve.
-                # This is a partial VWAP (trades seen so far) — a good approximation
-                # that is much better than zero and directionally correct.
-                running_vwaps, _ = compute_idc_vwaps(idc_vwap_accum)
+                # Falls back to the fill price itself (zero alpha) when no
+                # market trades have occurred yet for a product — avoids
+                # corrupting cumulative_pnl with an arbitrary zero benchmark.
+                running_vwaps, _ = compute_idc_vwaps(matching_engine.get_vwap_accumulator())
                 bar_pnl = sum(
                     (
-                        compute_fill_pnl(f, running_vwaps.get(f.product_id, Decimal("0")))
+                        compute_fill_pnl(f, running_vwaps.get(f.product_id, f.price))
                         for f in bar_all_fills
                     ),
                     Decimal("0"),
@@ -1203,7 +1205,7 @@ class BacktestEngine:
             context,
             clock,
             gate_closure_snapshots,
-            idc_vwap_accum,
+            matching_engine.get_vwap_accumulator(),
         )
 
     # ------------------------------------------------------------------

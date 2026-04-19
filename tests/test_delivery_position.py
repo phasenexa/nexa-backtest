@@ -144,3 +144,94 @@ def test_get_all_delivery_positions_multiple_periods() -> None:
     assert len(result) == 2
     assert result[ds_0900].net_mw == Decimal("5")
     assert result[ds_0915].net_mw == Decimal("-3")
+
+
+# ---------------------------------------------------------------------------
+# get_position — avg entry price with mixed buy/sell fills
+# ---------------------------------------------------------------------------
+
+
+def test_get_position_avg_price_pure_long() -> None:
+    """Pure long position: avg_price is weighted average of all buys."""
+    ctx = _make_ctx()
+    fill = Fill(
+        order_id="o1",
+        product_id="NO1-QH-0900",
+        price=Decimal("50"),
+        volume=Decimal("10"),
+        timestamp=datetime(2026, 3, 1, 8, 0, tzinfo=UTC),
+        side=Side.BUY,
+    )
+    ctx._record_fill(fill)
+    pos = ctx.get_position("NO1-QH-0900")
+    assert pos.net_mw == Decimal("10")
+    assert pos.avg_entry_price == Decimal("50")
+
+
+def test_get_position_avg_price_partial_close() -> None:
+    """BUY 100@50 then SELL 50@60: remaining long 50 should still have avg_price=50.
+
+    The sell closes part of the long at a profit, but the remaining open
+    position was entered at 50, not at some blended value of 50 and 60.
+    """
+    ctx = _make_ctx()
+    ts = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+    ctx._record_fill(
+        Fill(
+            order_id="o1",
+            product_id="P",
+            price=Decimal("50"),
+            volume=Decimal("100"),
+            timestamp=ts,
+            side=Side.BUY,
+        )
+    )
+    ctx._record_fill(
+        Fill(
+            order_id="o2",
+            product_id="P",
+            price=Decimal("60"),
+            volume=Decimal("50"),
+            timestamp=ts,
+            side=Side.SELL,
+        )
+    )
+    pos = ctx.get_position("P")
+    assert pos.net_mw == Decimal("50")
+    assert pos.avg_entry_price == Decimal("50"), (
+        f"Expected avg_entry_price=50, got {pos.avg_entry_price}. "
+        "Partial sell at a different price should not change the entry price of the remaining long."
+    )
+
+
+def test_get_position_avg_price_short_after_partial_buy_back() -> None:
+    """SELL 100@50 then BUY 40@45: remaining short 60 should have avg_price=50."""
+    ctx = _make_ctx()
+    ts = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+    ctx._record_fill(
+        Fill(
+            order_id="o1",
+            product_id="P",
+            price=Decimal("50"),
+            volume=Decimal("100"),
+            timestamp=ts,
+            side=Side.SELL,
+        )
+    )
+    ctx._record_fill(
+        Fill(
+            order_id="o2",
+            product_id="P",
+            price=Decimal("45"),
+            volume=Decimal("40"),
+            timestamp=ts,
+            side=Side.BUY,
+        )
+    )
+    pos = ctx.get_position("P")
+    assert pos.net_mw == Decimal("-60")
+    assert pos.avg_entry_price == Decimal("50"), (
+        f"Expected avg_entry_price=50, got {pos.avg_entry_price}. "
+        "Partial buy-back at a different price should not change "
+        "the entry price of the remaining short."
+    )
