@@ -100,7 +100,8 @@ def compute_sharpe(equity_snapshots: list[EquitySnapshot]) -> Decimal | None:
 
     Uses percentage returns between consecutive equity snapshots.
     Annualisation factor is derived from the actual average observation
-    frequency using ``sqrt(252 * periods_per_day)``.
+    frequency using ``sqrt(365 * periods_per_day)`` (energy markets
+    operate every day of the year, unlike equities' 252-day convention).
 
     Args:
         equity_snapshots: Chronological list of equity snapshots.
@@ -129,7 +130,7 @@ def compute_sharpe(equity_snapshots: list[EquitySnapshot]) -> Decimal | None:
     total_days = max(total_seconds / 86400.0, 1.0)
     n_obs = len(returns)
     periods_per_day = n_obs / total_days
-    annualisation = math.sqrt(252.0 * periods_per_day)
+    annualisation = math.sqrt(365.0 * periods_per_day)
 
     sharpe = (mean_ret / std_ret) * annualisation
     return Decimal(str(round(sharpe, 6)))
