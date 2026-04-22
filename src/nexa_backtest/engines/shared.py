@@ -45,6 +45,7 @@ from nexa_backtest.analysis.metrics import (
     compute_max_drawdown,
     compute_profit_factor,
     compute_sharpe,
+    compute_time_in_drawdown,
 )
 from nexa_backtest.analysis.pnl import compute_pnl
 from nexa_backtest.analysis.vwap import compute_idc_vwaps, compute_market_vwap
@@ -837,6 +838,7 @@ class SharedReplayEngine:
 
         sharpe = compute_sharpe(equity_snapshots)
         max_dd, max_dd_pct = compute_max_drawdown(equity_snapshots)
+        dd_time = compute_time_in_drawdown(equity_snapshots)
         product_vwaps_for_metrics = per_product_vwap or {}
         profit_fac = compute_profit_factor(
             all_fills, market_vwap, product_vwaps_for_metrics or None
@@ -881,6 +883,7 @@ class SharedReplayEngine:
             sharpe_ratio=sharpe,
             max_drawdown=max_dd,
             max_drawdown_pct=max_dd_pct,
+            time_in_drawdown=dd_time,
             profit_factor=profit_fac,
             avg_trade_pnl=avg_trade,
             best_trade=best_fill,

@@ -194,11 +194,20 @@ def _metric_rows(result: BacktestResult) -> list[tuple[str, str]]:
     final_equity = result.initial_capital + total_pnl
     total_volume = sum((f.volume for f in result.fills), Decimal("0"))
 
+    dd_hours = result.time_in_drawdown.total_seconds() / 3600
+    if dd_hours >= 24:
+        dd_days = result.time_in_drawdown.days
+        dd_rem_hours = result.time_in_drawdown.seconds // 3600
+        dd_str = f"{dd_days}d {dd_rem_hours:02d}h"
+    else:
+        dd_str = f"{dd_hours:.1f}h"
+
     rows: list[tuple[str, str]] = [
         ("Period", f"{result.start} — {result.end} ({result.duration_days} days)"),
         ("Exchange", result.exchange),
         ("Algo", result.algo_name),
         ("Total PnL", f"{total_pnl:+,.2f} EUR"),
+        ("PnL/MWh", f"{float(p.pnl_per_mwh):+.2f} EUR/MWh"),
         ("Market VWAP", f"{p.market_vwap:.2f} EUR/MWh"),
         (
             "Sharpe Ratio",
@@ -211,11 +220,16 @@ def _metric_rows(result: BacktestResult) -> list[tuple[str, str]]:
                 f"  ({-float(result.max_drawdown_pct) * 100:.1f}%)"
             ),
         ),
+        ("Time in Drawdown", dd_str),
         (
             "Profit Factor",
             f"{float(result.profit_factor):.2f}" if result.profit_factor is not None else "N/A",
         ),
         ("Trade Count", f"{len(result.fills):,d}"),
+        ("Win Rate", f"{p.win_rate:.1%}"),
+        ("Loss Rate", f"{p.loss_rate:.1%}"),
+        ("Longs", f"{p.long_pct:.1%}"),
+        ("Shorts", f"{p.short_pct:.1%}"),
         ("Total Volume", f"{float(total_volume):,.1f} MW"),
         ("Avg Trade PnL", f"{float(result.avg_trade_pnl):+,.2f} EUR"),
         ("Initial Capital", f"{float(result.initial_capital):,.2f} EUR"),
