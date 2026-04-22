@@ -15,7 +15,7 @@ import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -168,6 +168,38 @@ def compute_max_drawdown(
     return max_dd, max_dd_pct
 
 
+def compute_time_in_drawdown(
+    equity_snapshots: list[EquitySnapshot],
+) -> timedelta:
+    """Compute total time spent in drawdown (equity below its running peak).
+
+    Walks the equity curve and accumulates the duration of periods where
+    equity is strictly below the running peak.
+
+    Args:
+        equity_snapshots: Chronological list of equity snapshots.
+
+    Returns:
+        Total time in drawdown as a ``timedelta``. Zero if fewer than two
+        snapshots or the curve is monotonically increasing.
+    """
+    if len(equity_snapshots) < 2:
+        return timedelta(0)
+
+    peak = equity_snapshots[0].total_equity
+    total = timedelta(0)
+
+    for i in range(1, len(equity_snapshots)):
+        prev = equity_snapshots[i - 1]
+        curr = equity_snapshots[i]
+        if prev.total_equity < peak:
+            total += curr.timestamp - prev.timestamp
+        if curr.total_equity > peak:
+            peak = curr.total_equity
+
+    return total
+
+
 def compute_profit_factor(
     fills: list[Fill],
     market_vwap: Decimal,
@@ -218,6 +250,7 @@ class BacktestResult:
         sharpe_ratio: Annualised Sharpe ratio, or ``None`` if < 2 snapshots.
         max_drawdown: Largest peak-to-trough drawdown in EUR.
         max_drawdown_pct: Max drawdown as a fraction of peak equity.
+        time_in_drawdown: Total time the equity curve spent below its peak.
         profit_factor: Sum of gains / sum of losses, or ``None`` if no losses.
         avg_trade_pnl: Mean per-fill PnL in EUR.
         best_trade: Fill with the highest individual PnL, or ``None``.
@@ -243,6 +276,7 @@ class BacktestResult:
     sharpe_ratio: Decimal | None = None
     max_drawdown: Decimal = Decimal("0")
     max_drawdown_pct: Decimal = Decimal("0")
+    time_in_drawdown: timedelta = field(default_factory=lambda: timedelta(0))
     profit_factor: Decimal | None = None
     avg_trade_pnl: Decimal = Decimal("0")
     best_trade: Fill | None = None
@@ -272,6 +306,8 @@ class BacktestResult:
         total_pnl = p.total_alpha_eur
         final_equity = self.initial_capital + total_pnl
 
+        total_volume = sum((f.volume for f in self.fills), Decimal("0"))
+
         lines: list[str] = [
             sep,
             f"  Backtest Results: {self.start}  to  {self.end}  ({self.duration_days} days)",
@@ -279,6 +315,7 @@ class BacktestResult:
             sep,
             "",
             f"  Total PnL:        {total_pnl:>+14,.2f} EUR",
+            f"  PnL/MWh:          {float(p.pnl_per_mwh):>+14.2f} EUR/MWh",
             f"  Market VWAP:      {p.market_vwap:>14.2f} EUR/MWh",
         ]
 
@@ -292,22 +329,26 @@ class BacktestResult:
             f"  Max Drawdown:    {-float(self.max_drawdown):>+14,.2f} EUR  ({-dd_pct:.1f}%)"
         )
 
+        dd_hours = self.time_in_drawdown.total_seconds() / 3600
+        if dd_hours >= 24:
+            dd_days = self.time_in_drawdown.days
+            dd_rem_hours = self.time_in_drawdown.seconds // 3600
+            lines.append(f"  Time in Drawdown: {dd_days:>10d}d {dd_rem_hours:02d}h")
+        else:
+            lines.append(f"  Time in Drawdown: {dd_hours:>13.1f}h")
+
         if self.profit_factor is not None:
             lines.append(f"  Profit Factor:    {float(self.profit_factor):>14.2f}")
         else:
             lines.append(f"  Profit Factor:    {'N/A (no losses)':>14}")
 
-        total_volume = sum((f.volume for f in self.fills), Decimal("0"))
-        win_rate = (
-            (p.buys.win_rate * p.buys.count + p.sells.win_rate * p.sells.count) / len(self.fills)
-            if self.fills
-            else 0.0
-        )
-
         lines += [
             "",
             f"  Trades:           {len(self.fills):>14,d}",
-            f"  Win Rate:         {win_rate:>14.1%}",
+            f"  Win Rate:         {p.win_rate:>14.1%}",
+            f"  Loss Rate:        {p.loss_rate:>14.1%}",
+            f"  Longs:            {p.long_pct:>14.1%}",
+            f"  Shorts:           {p.short_pct:>14.1%}",
             f"  Avg Trade PnL:    {float(self.avg_trade_pnl):>+14,.2f} EUR",
         ]
 
@@ -585,7 +626,13 @@ class BacktestResult:
             "sharpe_ratio": str(self.sharpe_ratio) if self.sharpe_ratio is not None else None,
             "max_drawdown": str(self.max_drawdown),
             "max_drawdown_pct": str(self.max_drawdown_pct),
+            "time_in_drawdown_seconds": self.time_in_drawdown.total_seconds(),
             "profit_factor": str(self.profit_factor) if self.profit_factor is not None else None,
+            "pnl_per_mwh": str(self.pnl.pnl_per_mwh),
+            "win_rate": self.pnl.win_rate,
+            "loss_rate": self.pnl.loss_rate,
+            "long_pct": self.pnl.long_pct,
+            "short_pct": self.pnl.short_pct,
             "avg_trade_pnl": str(self.avg_trade_pnl),
             "trade_count": len(self.fills),
             "equity_curve": [_snap_to_dict(s) for s in self.equity_curve],
@@ -625,7 +672,13 @@ class BacktestResult:
             "sharpe_ratio": str(self.sharpe_ratio) if self.sharpe_ratio is not None else None,
             "max_drawdown": str(self.max_drawdown),
             "max_drawdown_pct": str(self.max_drawdown_pct),
+            "time_in_drawdown_seconds": self.time_in_drawdown.total_seconds(),
             "profit_factor": str(self.profit_factor) if self.profit_factor is not None else None,
+            "pnl_per_mwh": str(self.pnl.pnl_per_mwh),
+            "win_rate": self.pnl.win_rate,
+            "loss_rate": self.pnl.loss_rate,
+            "long_pct": self.pnl.long_pct,
+            "short_pct": self.pnl.short_pct,
             "avg_trade_pnl": str(self.avg_trade_pnl),
             "trade_count": len(self.fills),
         }

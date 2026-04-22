@@ -51,12 +51,22 @@ class PnlSummary:
         buys: Statistics for the algo's buy fills.
         sells: Statistics for the algo's sell fills.
         total_alpha_eur: Combined VWAP alpha across buys and sells in EUR.
+        pnl_per_mwh: Alpha per MWh traded (``total_alpha_eur / total_volume``).
+        win_rate: Combined win rate across buys and sells (fill-weighted).
+        loss_rate: ``1 - win_rate``.
+        long_pct: Fraction of fills that were buys.
+        short_pct: Fraction of fills that were sells.
     """
 
     market_vwap: Decimal
     buys: SideSummary
     sells: SideSummary
     total_alpha_eur: Decimal
+    pnl_per_mwh: Decimal = Decimal("0")
+    win_rate: float = 0.0
+    loss_rate: float = 1.0
+    long_pct: float = 0.0
+    short_pct: float = 0.0
 
 
 def _side_summary(
@@ -157,10 +167,26 @@ def compute_pnl(
     sells = _side_summary(fills, market_vwap, Side.SELL, product_vwaps)
 
     total_alpha = buys.total_alpha_eur + sells.total_alpha_eur
+    total_volume = buys.volume_mwh + sells.volume_mwh
+    total_count = buys.count + sells.count
+
+    pnl_per_mwh = total_alpha / total_volume if total_volume > 0 else Decimal("0")
+    win_rate = (
+        (buys.win_rate * buys.count + sells.win_rate * sells.count) / total_count
+        if total_count > 0
+        else 0.0
+    )
+    long_pct = buys.count / total_count if total_count > 0 else 0.0
+    short_pct = sells.count / total_count if total_count > 0 else 0.0
 
     return PnlSummary(
         market_vwap=market_vwap,
         buys=buys,
         sells=sells,
         total_alpha_eur=total_alpha,
+        pnl_per_mwh=pnl_per_mwh,
+        win_rate=win_rate,
+        loss_rate=1.0 - win_rate,
+        long_pct=long_pct,
+        short_pct=short_pct,
     )

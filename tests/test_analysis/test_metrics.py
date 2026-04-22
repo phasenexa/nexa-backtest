@@ -201,3 +201,75 @@ class TestComputeProfitFactor:
 
         product_result = compute_profit_factor([fill], Decimal("50"), product_vwaps)
         assert product_result is None  # gain vs product VWAP → no losses
+
+
+class TestComputeTimeInDrawdown:
+    """Tests for compute_time_in_drawdown."""
+
+    def test_empty_snapshots_returns_zero(self) -> None:
+        from datetime import timedelta
+
+        from nexa_backtest.analysis.metrics import compute_time_in_drawdown
+
+        assert compute_time_in_drawdown([]) == timedelta(0)
+
+    def test_single_snapshot_returns_zero(self) -> None:
+        from datetime import timedelta
+
+        from nexa_backtest.analysis.metrics import compute_time_in_drawdown
+        from nexa_backtest.types import EquitySnapshot
+
+        snap = EquitySnapshot(
+            timestamp=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            realised_pnl=Decimal("100"),
+            unrealised_pnl=Decimal("0"),
+            total_equity=Decimal("1100"),
+            cash=Decimal("1100"),
+            net_position_mw=Decimal("0"),
+        )
+        assert compute_time_in_drawdown([snap]) == timedelta(0)
+
+    def test_monotonically_increasing_no_drawdown(self) -> None:
+        from datetime import timedelta
+
+        from nexa_backtest.analysis.metrics import compute_time_in_drawdown
+        from nexa_backtest.types import EquitySnapshot
+
+        snaps = [
+            EquitySnapshot(
+                timestamp=datetime(2026, 3, 1, h, 0, tzinfo=UTC),
+                realised_pnl=Decimal(str(h * 10)),
+                unrealised_pnl=Decimal("0"),
+                total_equity=Decimal(str(1000 + h * 10)),
+                cash=Decimal(str(1000 + h * 10)),
+                net_position_mw=Decimal("0"),
+            )
+            for h in range(10, 15)
+        ]
+        assert compute_time_in_drawdown(snaps) == timedelta(0)
+
+    def test_drawdown_period_measured(self) -> None:
+        from datetime import timedelta
+
+        from nexa_backtest.analysis.metrics import compute_time_in_drawdown
+        from nexa_backtest.types import EquitySnapshot
+
+        def _snap(hour: int, equity: int) -> EquitySnapshot:
+            return EquitySnapshot(
+                timestamp=datetime(2026, 3, 1, hour, 0, tzinfo=UTC),
+                realised_pnl=Decimal(str(equity - 1000)),
+                unrealised_pnl=Decimal("0"),
+                total_equity=Decimal(str(equity)),
+                cash=Decimal(str(equity)),
+                net_position_mw=Decimal("0"),
+            )
+
+        # Peak at h=10 (1100), dips at h=11 (1050), h=12 (1080), recovers h=13 (1100)
+        snaps = [
+            _snap(10, 1100),  # peak
+            _snap(11, 1050),  # below peak → drawdown starts
+            _snap(12, 1080),  # still below peak
+            _snap(13, 1100),  # recovered to peak
+        ]
+        # Drawdown time: h11→h12 (1h) + h12→h13 (1h) = 2h
+        assert compute_time_in_drawdown(snaps) == timedelta(hours=2)
